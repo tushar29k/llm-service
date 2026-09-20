@@ -1,7 +1,8 @@
-"""Benchmark the service WITHOUT http: direct backend timing.
+"""Quick timings with no HTTP in the loop — talks to the backend directly.
 
     python3 bench.py
-Reports: time-to-first-token, total latency, tokens/sec for chat + stream.
+Prints time-to-first-token, total latency and tokens/sec for chat +
+streaming, plus one extract_json call so you can see the retry path work.
 """
 import time
 
