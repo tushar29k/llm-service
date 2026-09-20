@@ -1,9 +1,9 @@
-"""HTTP service over LocalLLM. Run: uvicorn app:app --reload
+"""HTTP layer over LocalLLM. Start it with:  uvicorn app:app --reload
 
   POST /chat         {messages, max_tokens?} -> {response}
   POST /chat/stream {messages}              -> SSE token stream
-  POST /extract     {prompt, required[]}    -> validated JSON (retry loop)
-  GET  /info                                -> backend, model, params
+  POST /extract     {prompt, required[]}    -> JSON, validated (retries for you)
+  GET  /info                                -> which backend is actually loaded
 """
 try:
     from fastapi import FastAPI
@@ -13,7 +13,8 @@ except ImportError as e:
 
 from model import LocalLLM
 
-llm = LocalLLM()               # loaded ONCE at startup — never per request
+llm = LocalLLM()   # load once at startup — model init is expensive,
+                   # never do this per request
 app = FastAPI(title="llm-service")
 
 
