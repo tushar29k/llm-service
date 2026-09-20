@@ -1,0 +1,4 @@
+backend: mock          # mock | hf
+model_id: Qwen/Qwen2.5-1.5B-Instruct
+dtype: float16
+prompt_dir: prompts/v1
