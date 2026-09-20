@@ -1,11 +1,14 @@
-"""LocalLLM: one clean interface over model backends.
+"""Everything in this service talks to models through LocalLLM — one
+interface, two backends.
 
-  MockBackend — instant, no downloads. Answers are templated; good for
-                developing the API, prompts, retries, and benchmarks.
-  HFBackend   — real Hugging Face model (needs torch + transformers +
-                a GPU for anything above ~3B).
+MockBackend: fake, instant, zero downloads. Answers are templated so it's
+dumb as rocks, but that's fine — it's just here so you can build the API,
+prompts, retries and benchmarks against something.
 
-# SWAP: config.yaml backend: mock -> hf
+HFBackend: a real Hugging Face model. Needs torch + transformers +
+accelerate, and honestly a GPU for anything above ~3B.
+
+Swap between them with one line in config.yaml:  backend: mock -> hf
 """
 import json
 import time
@@ -16,7 +19,8 @@ import yaml
 
 # ---------------------------------------------------------------- backends
 class MockBackend:
-    """Deterministic stand-in. Not intelligent — exercises everything else."""
+    """Not a real model — templated answers, runs instantly. Good enough
+    to build everything else against."""
 
     def generate(self, prompt, max_new_tokens=256, temperature=0.7):
         if "JSON" in prompt:
@@ -31,7 +35,8 @@ class MockBackend:
 
 
 class HFBackend:
-    """Real backend. Needs: pip install torch transformers accelerate."""
+    """The real thing. pip install torch transformers accelerate first,
+    and ideally have a GPU handy."""
 
     def __init__(self, model_id, dtype="float16"):
         import torch
@@ -71,7 +76,8 @@ class LocalLLM:
                                      self.cfg.get("dtype", "float16"))
         else:
             self.backend = MockBackend()
-        # prompt templates are versioned FILES, not inline strings
+        # prompts live as versioned files, not inline strings — much easier
+        # to diff v1 vs v2 later when something regresses
         self.prompt_dir = self.cfg.get("prompt_dir", "prompts/v1")
 
     def load_prompt(self, name, **kwargs):
@@ -79,7 +85,8 @@ class LocalLLM:
         return text.format(**kwargs)
 
     def build_prompt(self, messages):
-        # mock template; HFBackend path uses tok.apply_chat_template instead
+        # cheap stand-in for a chat template; the HF path uses the
+        # tokenizer's real chat template instead
         if isinstance(self.backend, HFBackend):
             return self.backend.tok.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True)
@@ -94,9 +101,12 @@ class LocalLLM:
         yield from self.backend.stream(self.build_prompt(messages),
                                        max_new_tokens)
 
-    # -- structured output: generate -> validate -> feed error back --------
+    # -- structured output: ask -> check what came back -> show the model
+    #    its mistake and try again ----------------------------------------
     @staticmethod
     def _extract_json(text, required):
+        # cheap trick: grab the outermost { ... } instead of trusting the
+        # model to output *only* JSON (it rarely does on the first try)
         start, end = text.find("{"), text.rfind("}")
         if start == -1:
             return None, "no JSON object found"
