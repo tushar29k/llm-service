@@ -1,0 +1,7 @@
+Summarise the following document in {max_words} words or fewer.
+Do not add information that is not in the document.
+
+Document:
+{document}
+
+Summary:
