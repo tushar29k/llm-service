@@ -132,8 +132,12 @@ function send(){
   b.scrollIntoView({behavior:'smooth',block:'nearest'});
   var btn=document.getElementById('sendbtn');btn.disabled=true;
   history.push({role:'user',content:text});
-  fetch('/chat/stream',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:history})})
+  // give up after 90s so a stalled stream (e.g. cold start) can't lock the ui
+  var ctrl=new AbortController();
+  var timer=setTimeout(function(){ctrl.abort()},90000);
+  fetch('/chat/stream',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:history}),signal:ctrl.signal})
   .then(function(res){
+    if(!res.ok){throw new Error('server returned '+res.status)}
     var reader=res.body.getReader();var dec=new TextDecoder();var buf='';var full='';
     function pump(){
       return reader.read().then(function(x){
@@ -148,11 +152,12 @@ function send(){
       });
     }
     function finish(){
+      clearTimeout(timer);
       b.innerHTML=esc(full);btn.disabled=false;
       history.push({role:'assistant',content:full});
     }
     return pump();
-  }).catch(function(e){b.textContent='Error: '+e.message;btn.disabled=false});
+  }).catch(function(e){clearTimeout(timer);b.textContent='Error: '+e.message+' — please try again';btn.disabled=false});
 }
 
 function extract(){
