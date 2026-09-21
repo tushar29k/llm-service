@@ -20,13 +20,14 @@ def main():
     # differ from chat; here we only care that it yields multiple chunks
 
     obj = llm.extract_json("Extract the order.", ["order_id", "items"])
-    assert obj["order_id"] == "ORD-1" and obj["items"] == 2, "extract broken"
+    assert obj == {"order_id": "mock-order_id",
+                   "items": "mock-items"}, "extract broken"
 
-    # the mock never emits this field, so the retry loop should give up
-    # and raise instead of returning garbage
+    # the retry loop should give up and raise instead of returning garbage
+    # when the backend never produces valid json
+    llm.backend.generate = lambda prompt, **kw: "definitely not json"
     try:
-        llm.extract_json("Extract the order.", ["nonexistent_field"],
-                         retries=1)
+        llm.extract_json("Extract the order.", ["order_id"], retries=1)
         raise AssertionError("should have raised")
     except ValueError:
         pass
