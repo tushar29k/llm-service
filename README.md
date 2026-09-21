@@ -2,6 +2,11 @@
 
 An OpenAI-style chat/completions microservice you can develop against with zero API keys.
 
+## Live demo
+
+**[https://tushar29k-llm-service.onrender.com](https://tushar29k-llm-service.onrender.com)** — Streaming chat and structured JSON extraction against the mock backend — the same API shape the real model backends use.
+> Hosted on Render's free tier — the first visit after a while can take ~30s while the instance wakes up.
+
 ## The idea
 
 Say you want to build something on top of an LLM — a chat endpoint, token streaming, structured JSON extraction with retries. Normally you'd need API keys, credits, and patience while you iterate on the *plumbing*: the API shape, prompt management, retry logic, benchmarks. That's the annoying part, and it's also the part that transfers between models.
