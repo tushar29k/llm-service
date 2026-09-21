@@ -125,17 +125,18 @@ fetch('/info').then(function(r){return r.json()}).then(function(i){
   document.getElementById('info').innerHTML='backend: <b>'+esc(i.backend)+'</b>'+(i.model?' · '+esc(i.model):'');
 }).catch(function(){document.getElementById('info').textContent='backend: unknown'});
 
-var history=[];
+var chatLog=[];
 var statusEl=document.getElementById('status');
 function setStatus(t){if(statusEl)statusEl.textContent=t||''}
 function send(){
   var input=document.getElementById('msg');var text=input.value.trim();if(!text)return;input.value='';
+  try{ // safety net: a sync throw must never leave the button stuck
   var log=document.getElementById('log');
   var u=document.createElement('div');u.className='msg user';u.textContent=text;log.appendChild(u);
   var b=document.createElement('div');b.className='msg';b.innerHTML='<span class="cursor"></span>';log.appendChild(b);
   b.scrollIntoView({behavior:'smooth',block:'nearest'});
   var btn=document.getElementById('sendbtn');btn.disabled=true;
-  history.push({role:'user',content:text});
+  chatLog.push({role:'user',content:text});
   setStatus('waking up the demo server… (free tier, first reply can take ~30s)');
   var ctrl=new AbortController();var gotData=false;
   // nothing at all within 40s means the sleeping server is still waking —
@@ -144,7 +145,7 @@ function send(){
   // absolute backstop: a stalled stream can never lock the ui
   var hardStop=setTimeout(function(){ctrl.abort()},90000);
   function done(){clearTimeout(firstByte);clearTimeout(hardStop);setStatus('');btn.disabled=false}
-  fetch('/chat/stream',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:history}),signal:ctrl.signal})
+  fetch('/chat/stream',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:chatLog}),signal:ctrl.signal})
   .then(function(res){
     if(!res.ok){throw new Error('server returned '+res.status)}
     var reader=res.body.getReader();var dec=new TextDecoder();var buf='';var full='';
@@ -164,7 +165,7 @@ function send(){
     function finish(){
       done();
       b.innerHTML=esc(full);
-      history.push({role:'assistant',content:full});
+      chatLog.push({role:'assistant',content:full});
     }
     return pump();
   }).catch(function(e){
@@ -174,6 +175,8 @@ function send(){
                                  :'server is still waking up — tap send again')
                           :('Error: '+e.message+' — please try again');
   });
+  }catch(err){btn.disabled=false;setStatus('');
+    if(typeof b!=='undefined')b.textContent='Error: '+err.message+' — please try again'}
 }
 
 function extract(){
