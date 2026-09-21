@@ -1,41 +1,99 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="nebula">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>llm-service — demo</title>
+<title>llm-service — nebula demo</title>
 <style>
-:root{--bg:#0B1424;--bg2:#0E1A2E;--line:#182742;--cyan:#22D3EE;--teal:#2DD4BF;--violet:#A78BFA;--text:#E6EDF3;--muted:#8B98A9}
+/* nebula: deep-space cosmic skin over the same demo flows */
+:root{
+  --deep:#0b0620; --deep2:#120b2e;
+  --violet:#8b5cf6; --vio:#a78bfa; --cyan:#67e8f9; --pink:#f0abfc;
+  --text:#efeaff; --muted:#a79fc9; --line:rgba(167,139,250,.22);
+}
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--bg);color:var(--text);font-family:Inter,system-ui,sans-serif;line-height:1.6;padding:2rem 1.2rem;max-width:860px;margin:0 auto}
-header{display:flex;align-items:center;gap:.8rem;margin-bottom:.4rem;flex-wrap:wrap}
-h1{font-size:1.4rem}h1 span{color:var(--cyan)}
-.badge{font-size:.75rem;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:.25rem .8rem}
-.badge b{color:var(--teal)}
-.sub{color:var(--muted);font-size:.9rem;margin-bottom:1.4rem}
-.tabs{display:flex;gap:.6rem;margin-bottom:1.4rem}
-.tabs button{background:var(--bg2);border:1px solid var(--line);color:var(--muted);padding:.55rem 1.2rem;border-radius:999px;cursor:pointer;font-size:.9rem}
-.tabs button.active{color:var(--cyan);border-color:var(--cyan)}
-#log{display:flex;flex-direction:column;gap:.7rem;margin-bottom:1.2rem;min-height:160px}
-.msg{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:.9rem 1.1rem;animation:fade .3s ease;white-space:pre-wrap}
-@keyframes fade{from{opacity:0;transform:translateY(6px)}}
-.msg.user{align-self:flex-end;border-color:var(--cyan);max-width:85%}
-.msg .cursor{display:inline-block;width:8px;height:1em;background:var(--cyan);vertical-align:-2px;animation:blink 1s steps(1) infinite}
+html{background:var(--deep)}
+body{
+  color:var(--text);font-family:Inter,system-ui,-apple-system,sans-serif;line-height:1.6;
+  padding:2.5rem 1.2rem 3rem;max-width:880px;margin:0 auto;min-height:100vh;position:relative;
+}
+/* aurora wash behind everything */
+body::before{
+  content:'';position:fixed;inset:0;z-index:-2;pointer-events:none;
+  background:
+    radial-gradient(60% 40% at 15% 0%, rgba(139,92,246,.28), transparent 70%),
+    radial-gradient(50% 35% at 85% 20%, rgba(103,232,249,.14), transparent 70%),
+    radial-gradient(55% 45% at 50% 100%, rgba(240,171,252,.10), transparent 70%),
+    linear-gradient(180deg,#0b0620,#140c33 60%,#0b0620);
+}
+/* tiny starfield: two tiled dot layers, cheap and static */
+.stars{position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.7;
+  background-image:
+    radial-gradient(1px 1px at 20px 30px, #fff, transparent),
+    radial-gradient(1px 1px at 130px 90px, rgba(255,255,255,.6), transparent),
+    radial-gradient(1.5px 1.5px at 70px 160px, rgba(199,210,254,.8), transparent);
+  background-size:220px 220px, 340px 340px, 420px 420px;
+}
+header{display:flex;align-items:center;gap:.9rem;margin-bottom:.5rem;flex-wrap:wrap}
+/* little glowing planet for the brand */
+.orb{width:34px;height:34px;border-radius:50%;flex:none;
+  background:radial-gradient(circle at 32% 30%, #fdf4ff, var(--vio) 45%, #4c1d95 100%);
+  box-shadow:0 0 22px rgba(167,139,250,.65), 0 0 60px rgba(139,92,246,.25);}
+h1{font-size:1.45rem;font-weight:800;letter-spacing:.5px}
+h1 .neb{color:var(--vio)}
+.badge{font-size:.75rem;color:var(--muted);border:1px solid var(--line);border-radius:999px;
+  padding:.3rem .9rem;background:rgba(139,92,246,.08);backdrop-filter:blur(4px)}
+.badge b{color:var(--cyan);font-weight:600}
+.sub{color:var(--muted);font-size:.92rem;margin-bottom:1.6rem}
+/* thin aurora divider */
+.rule{height:1px;margin:0 0 1.4rem;border:0;
+  background:linear-gradient(90deg,transparent,var(--vio),var(--cyan),transparent);opacity:.5}
+.tabs{display:flex;gap:.6rem;margin-bottom:1.5rem}
+.tabs button{background:rgba(139,92,246,.08);border:1px solid var(--line);color:var(--muted);
+  padding:.6rem 1.4rem;border-radius:999px;cursor:pointer;font-size:.9rem;font-family:inherit;
+  transition:border-color .2s,color .2s,box-shadow .2s}
+.tabs button.active{color:#fff;border-color:var(--vio);
+  box-shadow:0 0 18px rgba(139,92,246,.45), inset 0 0 12px rgba(139,92,246,.15)}
+#log{display:flex;flex-direction:column;gap:.8rem;margin-bottom:1.3rem;min-height:160px}
+.msg{background:rgba(18,11,46,.72);border:1px solid var(--line);border-radius:18px;
+  padding:.95rem 1.15rem;animation:rise .3s ease;white-space:pre-wrap;backdrop-filter:blur(6px)}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}}
+.msg.user{align-self:flex-end;max-width:85%;
+  background:linear-gradient(135deg,rgba(139,92,246,.30),rgba(103,232,249,.12));
+  border-color:rgba(167,139,250,.55);box-shadow:0 0 24px rgba(139,92,246,.18)}
+.msg .cursor{display:inline-block;width:8px;height:1em;background:var(--cyan);
+  vertical-align:-2px;animation:blink 1s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
 .row{display:flex;gap:.7rem}
-input[type=text]{flex:1;background:var(--bg2);border:1px solid var(--line);border-radius:999px;color:var(--text);padding:.75rem 1.2rem;font-size:.95rem;font-family:inherit}
-input:focus,textarea:focus{outline:none;border-color:var(--cyan)}
-button.go{background:linear-gradient(90deg,var(--cyan),var(--teal));border:none;color:#06222b;font-weight:700;padding:.75rem 1.6rem;border-radius:999px;cursor:pointer}
+input[type=text]{flex:1;min-width:0;background:rgba(18,11,46,.72);border:1px solid var(--line);
+  border-radius:999px;color:var(--text);padding:.8rem 1.3rem;font-size:.95rem;font-family:inherit}
+input:focus,textarea:focus{outline:none;border-color:var(--vio);box-shadow:0 0 16px rgba(139,92,246,.35)}
+button.go{background:linear-gradient(100deg,var(--violet),#22d3ee);border:none;color:#0b0620;
+  font-weight:700;padding:.8rem 1.7rem;border-radius:999px;cursor:pointer;font-family:inherit;
+  box-shadow:0 0 20px rgba(139,92,246,.45);transition:transform .15s,box-shadow .2s}
+button.go:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 0 28px rgba(139,92,246,.6)}
 button.go:disabled{opacity:.5;cursor:wait}
-textarea{width:100%;background:var(--bg2);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:.8rem;font-size:.95rem;font-family:inherit;min-height:100px;resize:vertical;margin-bottom:.8rem}
-pre.out{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:1rem;overflow-x:auto;font-size:.85rem;margin-top:1rem;color:var(--teal)}
+textarea{width:100%;background:rgba(18,11,46,.72);border:1px solid var(--line);border-radius:16px;
+  color:var(--text);padding:.9rem 1rem;font-size:.95rem;font-family:inherit;min-height:110px;
+  resize:vertical;margin-bottom:.8rem}
+pre.out{background:rgba(8,4,24,.85);border:1px solid var(--line);border-radius:16px;
+  padding:1.1rem;overflow-x:auto;font-size:.85rem;margin-top:1rem;color:var(--cyan);
+  box-shadow:inset 0 0 30px rgba(139,92,246,.08)}
 .hidden{display:none}
 label{color:var(--muted);font-size:.85rem;display:block;margin:.6rem 0}
+@media(max-width:560px){
+  body{padding:1.6rem .9rem 2.5rem}
+  .row{flex-direction:column}
+  button.go{width:100%}
+  .msg.user{max-width:100%}
+}
 </style>
 </head>
 <body>
-<header><h1>llm-service <span>demo</span></h1><span class="badge" id="info">backend: …</span></header>
-<p class="sub">Chat with streaming, or pull structured JSON out of messy text.</p>
+<div class="stars"></div>
+<header><span class="orb"></span><h1>llm-service <span class="neb">nebula</span></h1><span class="badge" id="info">backend: …</span></header>
+<p class="sub">Chat with streaming, or pull structured JSON out of messy text — now from deep space.</p>
+<hr class="rule" />
 
 <div class="tabs">
   <button id="tab-chat" class="active" onclick="show('chat')">Chat</button>
@@ -45,7 +103,7 @@ label{color:var(--muted);font-size:.85rem;display:block;margin:.6rem 0}
 <div id="pane-chat">
   <div id="log"></div>
   <div class="row">
-    <input type="text" id="msg" placeholder="Say something…" onkeydown="if(event.key==='Enter')send()" />
+    <input type="text" id="msg" placeholder="Ask across the void…" onkeydown="if(event.key==='Enter')send()" />
     <button class="go" id="sendbtn" onclick="send()">Send →</button>
   </div>
 </div>
