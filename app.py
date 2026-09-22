@@ -39,11 +39,14 @@ def extract(body: dict):
 @app.get("/info")
 def info():
     backend = type(llm.backend).__name__
-    params = None
+    params, loaded = None, True
     if backend == "HFBackend":
-        params = sum(p.numel() for p in llm.backend.model.parameters())
+        # lazy backend: params only exist once the model is actually loaded
+        loaded = llm.backend.loaded
+        if loaded:
+            params = sum(p.numel() for p in llm.backend.model.parameters())
     return {"backend": backend, "model": llm.cfg.get("model_id"),
-            "params": params}
+            "params": params, "loaded": loaded}
 
 # -- demo ui -----------------------------------------------------------------
 # open / in a browser to click through the api instead of curling it.

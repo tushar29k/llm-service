@@ -43,20 +43,72 @@ class MockBackend:
 
 class HFBackend:
     """The real thing. pip install torch transformers accelerate first,
-    and ideally have a GPU handy."""
+    and honestly a GPU for anything above ~3B.
+
+    Loads lazily on the first generate call — so importing app.py with
+    backend: hf stays cheap until the model is actually needed.
+    """
+
+    # vram maths for Qwen2-0.5B-Instruct, worked out before loading:
+    #   weights:    494M params x 2 B (fp16)            ~ 1.0 GB
+    #   kv cache:   2 x 24 layers x 896 dim x 2 B       ~ 86 KB per token
+    #               (2k-ctx worst case -> ~170 MB, usually way less)
+    #   torch + activations overhead                    ~ 300 MB
+    #   peak total                                      ~ 1.5 GB
+    # so ~2 GB of free VRAM (or RAM on CPU) is the honest minimum.
+    # on CPU the same maths applies in RAM, just ~10x slower per token.
 
     def __init__(self, model_id, dtype="float16"):
-        import torch
-        from transformers import AutoTokenizer, AutoModelForCausalLM
-        self.torch = torch
-        self.tok = AutoTokenizer.from_pretrained(model_id)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_id, torch_dtype=getattr(torch, dtype), device_map="auto")
+        self.model_id = model_id
+        self.dtype = dtype
+        self.torch = None   # set by _ensure_loaded, kept for dtype lookups
+        self.tok = None
+        self.model = None
+
+    @property
+    def loaded(self):
+        return self.model is not None
+
+    def _ensure_loaded(self):
+        if self.loaded:
+            return
+        try:
+            import torch
+        except ImportError as e:
+            raise RuntimeError(
+                "HF backend needs torch (pip install torch) — or flip "
+                "config.yaml back to backend: mock") from e
+        try:
+            from transformers import AutoTokenizer, AutoModelForCausalLM
+        except ImportError as e:
+            raise RuntimeError(
+                "HF backend needs transformers (pip install transformers "
+                "accelerate)") from e
+        # fp16 matmuls are a GPU thing — on CPU float32 is faster and safer
+        dtype = (torch.float32 if not torch.cuda.is_available()
+                 else getattr(torch, self.dtype, torch.float16))
+        try:
+            tok = AutoTokenizer.from_pretrained(self.model_id)
+            model = AutoModelForCausalLM.from_pretrained(
+                self.model_id, dtype=dtype, device_map="auto")
+        except Exception as e:
+            raise RuntimeError(
+                f"couldn't fetch {self.model_id} from the HF hub "
+                f"(check the model id and your network): {e}") from e
+        self.torch, self.tok, self.model = torch, tok, model
+
+    @property
+    def tokenizer(self):
+        # chat template needs the tokenizer even before the first generate
+        self._ensure_loaded()
+        return self.tok
 
     def _inputs(self, prompt):
+        self._ensure_loaded()
         return self.tok(prompt, return_tensors="pt").to(self.model.device)
 
     def generate(self, prompt, max_new_tokens=256, temperature=0.7):
+        self._ensure_loaded()
         inputs = self._inputs(prompt)
         out = self.model.generate(**inputs, max_new_tokens=max_new_tokens,
                                   temperature=temperature, do_sample=True)
@@ -66,8 +118,10 @@ class HFBackend:
     def stream(self, prompt, max_new_tokens=256):
         from transformers import TextIteratorStreamer
         from threading import Thread
+        self._ensure_loaded()
         inputs = self._inputs(prompt)
-        streamer = TextIteratorStreamer(self.tok, skip_special_tokens=True)
+        streamer = TextIteratorStreamer(self.tok, skip_special_tokens=True,
+                                        skip_prompt=True)  # prompt would echo otherwise
         Thread(target=self.model.generate,
                kwargs={**inputs, "max_new_tokens": max_new_tokens,
                        "streamer": streamer}, daemon=True).start()
@@ -95,7 +149,7 @@ class LocalLLM:
         # cheap stand-in for a chat template; the HF path uses the
         # tokenizer's real chat template instead
         if isinstance(self.backend, HFBackend):
-            return self.backend.tok.apply_chat_template(
+            return self.backend.tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True)
         return "\n".join(f"{m['role']}: {m['content']}" for m in messages
                          ) + "\nassistant:"

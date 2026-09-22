@@ -1,4 +1,4 @@
 backend: mock          # mock | hf
-model_id: Qwen/Qwen2.5-1.5B-Instruct
+model_id: Qwen/Qwen2-0.5B-Instruct   # verified small default for the hf backend
 dtype: float16
 prompt_dir: prompts/v1
