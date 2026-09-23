@@ -5,3 +5,4 @@ pyyaml
 # torch
 # transformers
 # accelerate
+# bitsandbytes   # optional 8-bit quantized loading for the hf backend

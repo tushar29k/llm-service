@@ -60,6 +60,27 @@ python3 bench.py
 
 You'll get three lines: `chat:` with total time and tok/s, `stream:` with first-token time and tok/s, and `extract_json:` with the parsed object. (On the mock these numbers are meaningless for model quality — they just tell you the plumbing works and how fast your machine runs the scaffolding.)
 
+**Quantization — FP16 vs INT8** (`quantization: 8bit` in `config.yaml`):
+
+The 8-bit path loads the weights as int8 via bitsandbytes (`BitsAndBytesConfig(load_in_8bit=True)`), which works on CPU — dequantization happens on the fly at each matmul. If the 8-bit load fails for any reason, the backend warns and falls back to unquantized weights. Run the head-to-head with:
+
+```bash
+python3 bench.py --quant compare
+```
+
+Measured 2026-09-23 — `Qwen2-0.5B-Instruct` on a CPU-only box, 60 new tokens per call, spot-check greedy (temperature 0):
+
+| quant | weights | chat tok/s | stream tok/s | stream TTFT | extract ok | quality spot-check |
+|-------|---------|------------|--------------|-------------|------------|--------------------|
+| FP16  | 1976 MB | 2.1        | 5.7          | 537 ms      | True       | "The human heart pumps blood throughout the body to provide oxygen and nutrients to cells." |
+| INT8  | 630 MB  | 3.0        | 4.7          | 362 ms      | True       | byte-identical output |
+
+Reading it honestly:
+
+- This box has no GPU, so the "FP16" row is really float32 weights — the backend deliberately loads float32 on CPU because fp16 matmuls are a GPU thing (494M params × 4 B ≈ 2.0 GB). INT8 drops that to ~630 MB, roughly 3× smaller. That's the real win.
+- On CPU, int8 speed is roughly on par at this scale (slightly faster chat, slightly slower streaming — dequantize overhead and smaller memory traffic mostly cancel out at 0.5B). Expect the memory win to matter more than speed until you're on bigger models.
+- Quality: the greedy spot-check produced byte-identical text under INT8, and structured extraction (`extract_json`) returned valid JSON on both. No visible quality loss on these prompts — with one caveat: an earlier INT8 run failed the extract retry loop once, so treat 0.5B-scale int8 structured output as mildly flaky rather than bulletproof. `bench.py` now records a failed extract as `extract_ok=False` instead of crashing, so the comparison table always prints.
+
 **API server:**
 
 ```bash
@@ -96,7 +117,8 @@ model.py          LocalLLM: chat / chat_stream / extract_json (retry loop)
 app.py            FastAPI: /chat, /chat/stream (SSE), /extract, /info
 prompts/v1/       versioned prompt templates — files, not inline strings
 bench.py          latency + throughput, straight against the backend (no HTTP)
-config.yaml       backend: mock | hf — the one-line swap to a real model
+config.yaml       backend: mock | hf, quantization: none | 8bit — the knobs
+                  to swap backends or halve weight memory
 test_smoke.py     sanity checks for chat, streaming, extraction, retries, prompts
 ```
 

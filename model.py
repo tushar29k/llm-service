@@ -47,6 +47,11 @@ class HFBackend:
 
     Loads lazily on the first generate call — so importing app.py with
     backend: hf stays cheap until the model is actually needed.
+
+    quantization: "none" (default) or "8bit". 8-bit loads the weights
+    as int8 via bitsandbytes (works on CPU too, dequantizes on the fly
+    at each matmul). Set in config.yaml; falls back to "none" with a
+    warning if the 8-bit load fails for any reason.
     """
 
     # vram maths for Qwen2-0.5B-Instruct, worked out before loading:
@@ -57,10 +62,13 @@ class HFBackend:
     #   peak total                                      ~ 1.5 GB
     # so ~2 GB of free VRAM (or RAM on CPU) is the honest minimum.
     # on CPU the same maths applies in RAM, just ~10x slower per token.
+    # with quantization: 8bit the weights halve to ~0.5 GB (CPU int8 path).
 
-    def __init__(self, model_id, dtype="float16"):
+    def __init__(self, model_id, dtype="float16", quantization="none"):
         self.model_id = model_id
         self.dtype = dtype
+        q = str(quantization or "none").lower()
+        self.quantization = q if q in ("none", "8bit") else "none"
         self.torch = None   # set by _ensure_loaded, kept for dtype lookups
         self.tok = None
         self.model = None
@@ -89,13 +97,37 @@ class HFBackend:
                  else getattr(torch, self.dtype, torch.float16))
         try:
             tok = AutoTokenizer.from_pretrained(self.model_id)
-            model = AutoModelForCausalLM.from_pretrained(
-                self.model_id, dtype=dtype, device_map="auto")
+            if self.quantization == "8bit":
+                try:
+                    model = self._load_8bit()
+                except Exception as e:
+                    # 8-bit didn't pan out — warn loudly, serve unquantized
+                    print(f"warning: 8-bit quantization failed ({e}); "
+                          "falling back to unquantized weights")
+                    self.quantization = "none"
+                    model = self._load_plain(dtype)
+            else:
+                model = self._load_plain(dtype)
         except Exception as e:
             raise RuntimeError(
                 f"couldn't fetch {self.model_id} from the HF hub "
                 f"(check the model id and your network): {e}") from e
         self.torch, self.tok, self.model = torch, tok, model
+
+    def _load_plain(self, dtype):
+        from transformers import AutoModelForCausalLM
+        return AutoModelForCausalLM.from_pretrained(
+            self.model_id, dtype=dtype, device_map="auto")
+
+    def _load_8bit(self):
+        # bitsandbytes keeps weights as int8 + an fp scale per row and
+        # dequantizes on the fly at each matmul — real halved memory,
+        # slight speed cost, works on CPU (no CUDA kernel needed for this)
+        from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+        return AutoModelForCausalLM.from_pretrained(
+            self.model_id,
+            quantization_config=BitsAndBytesConfig(load_in_8bit=True),
+            device_map="auto")
 
     @property
     def tokenizer(self):
@@ -111,7 +143,8 @@ class HFBackend:
         self._ensure_loaded()
         inputs = self._inputs(prompt)
         out = self.model.generate(**inputs, max_new_tokens=max_new_tokens,
-                                  temperature=temperature, do_sample=True)
+                                  temperature=temperature,
+                                  do_sample=temperature > 0)  # greedy when 0
         return self.tok.decode(out[0][inputs.input_ids.shape[1]:],
                                skip_special_tokens=True)
 
@@ -130,11 +163,16 @@ class HFBackend:
 
 # ---------------------------------------------------------------- LLM
 class LocalLLM:
-    def __init__(self, config_path="config.yaml"):
+    def __init__(self, config_path="config.yaml", quantization=None):
         self.cfg = yaml.safe_load(open(config_path))
         if self.cfg.get("backend", "mock") == "hf":
+            # explicit kwarg (bench) beats config.yaml; default none keeps
+            # yesterday's behaviour untouched
+            q = (quantization if quantization is not None
+                 else self.cfg.get("quantization", "none"))
             self.backend = HFBackend(self.cfg["model_id"],
-                                     self.cfg.get("dtype", "float16"))
+                                     self.cfg.get("dtype", "float16"),
+                                     quantization=q)
         else:
             self.backend = MockBackend()
         # prompts live as versioned files, not inline strings — much easier
