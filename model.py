@@ -1,5 +1,5 @@
 """Everything in this service talks to models through LocalLLM — one
-interface, two backends.
+interface, three backends.
 
 MockBackend: fake, instant, zero downloads. Answers are templated so it's
 dumb as rocks, but that's fine — it's just here so you can build the API,
@@ -8,7 +8,11 @@ prompts, retries and benchmarks against something.
 HFBackend: a real Hugging Face model. Needs torch + transformers +
 accelerate, and honestly a GPU for anything above ~3B.
 
-Swap between them with one line in config.yaml:  backend: mock -> hf
+VLLMBackend: the same model served by vLLM — paged attention +
+continuous batching, so much higher tok/s on a GPU. Needs the vllm
+package and CUDA; falls back to HFBackend with a warning without it.
+
+Swap between them with one line in config.yaml:  backend: mock -> hf -> vllm
 """
 import json
 import time
@@ -161,11 +165,83 @@ class HFBackend:
         yield from streamer
 
 
+class VLLMBackend:
+    """Same generate/stream interface, but served by vLLM — paged
+    attention + continuous batching, so much higher tok/s on a GPU.
+
+    Needs: pip install vllm, and a CUDA GPU (vLLM doesn't do CPU).
+    Loads lazily on the first generate call. If the vllm package isn't
+    importable, __init__ raises and LocalLLM falls back to the HF
+    backend with a warning — same model, just slower.
+    """
+
+    def __init__(self, model_id, quantization="none"):
+        try:
+            import vllm  # noqa: F401 — availability probe, real import is lazy
+        except ImportError as e:
+            raise RuntimeError(
+                "vllm backend needs the vllm package "
+                "(pip install vllm, CUDA GPU required)") from e
+        self.model_id = model_id
+        q = str(quantization or "none").lower()
+        self.quantization = q if q in ("none", "awq", "gptq") else "none"
+        self.llm = None
+
+    @property
+    def loaded(self):
+        return self.llm is not None
+
+    def _ensure_loaded(self):
+        if self.loaded:
+            return
+        from vllm import LLM
+        # vllm grabs ~90% of GPU RAM by default; fine on a dedicated box,
+        # lower gpu_memory_utilization if you're sharing it
+        self.llm = LLM(
+            model=self.model_id,
+            quantization=(self.quantization
+                          if self.quantization != "none" else None))
+
+    @property
+    def tokenizer(self):
+        # chat template needs the tokenizer even before the first generate
+        self._ensure_loaded()
+        return self.llm.get_tokenizer()
+
+    def generate(self, prompt, max_new_tokens=256, temperature=0.7):
+        from vllm import SamplingParams
+        self._ensure_loaded()
+        params = SamplingParams(max_tokens=max_new_tokens,
+                                temperature=temperature)
+        return self.llm.generate([prompt], params)[0].outputs[0].text
+
+    def stream(self, prompt, max_new_tokens=256):
+        # vllm's offline LLM.generate returns whole outputs — no public
+        # streaming iterator — so chunk the finished text like MockBackend;
+        # TTFT here ~= full generate latency, not a real first token
+        for word in self.generate(prompt, max_new_tokens).split():
+            yield word + " "
+
+
 # ---------------------------------------------------------------- LLM
 class LocalLLM:
-    def __init__(self, config_path="config.yaml", quantization=None):
+    def __init__(self, config_path="config.yaml", quantization=None,
+                 backend=None):
         self.cfg = yaml.safe_load(open(config_path))
-        if self.cfg.get("backend", "mock") == "hf":
+        # explicit kwarg (bench) beats config.yaml
+        which = backend or self.cfg.get("backend", "mock")
+        if which == "vllm":
+            try:
+                self.backend = VLLMBackend(
+                    self.cfg["model_id"],
+                    self.cfg.get("vllm_quantization", "none"))
+            except RuntimeError as e:
+                # no vllm package on this box — serve the same model
+                # through the HF backend instead of refusing to start
+                print(f"warning: {e}; falling back to the HF backend")
+                self.backend = HFBackend(self.cfg["model_id"],
+                                         self.cfg.get("dtype", "float16"))
+        elif which == "hf":
             # explicit kwarg (bench) beats config.yaml; default none keeps
             # yesterday's behaviour untouched
             q = (quantization if quantization is not None
@@ -184,9 +260,9 @@ class LocalLLM:
         return text.format(**kwargs)
 
     def build_prompt(self, messages):
-        # cheap stand-in for a chat template; the HF path uses the
-        # tokenizer's real chat template instead
-        if isinstance(self.backend, HFBackend):
+        # HF and vLLM expose the tokenizer's real chat template; the mock
+        # gets the cheap stand-in
+        if hasattr(self.backend, "tokenizer"):
             return self.backend.tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True)
         return "\n".join(f"{m['role']}: {m['content']}" for m in messages

@@ -6,3 +6,5 @@ pyyaml
 # transformers
 # accelerate
 # bitsandbytes   # optional 8-bit quantized loading for the hf backend
+# vllm            # optional vllm backend (needs a CUDA GPU; falls back
+                # to the hf backend with a warning if not installed)

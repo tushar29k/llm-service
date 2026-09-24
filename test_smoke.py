@@ -36,6 +36,14 @@ def main():
     p = llm.load_prompt("summarise", max_words=50, document="hello world")
     assert "50" in p and "hello world" in p, "prompt template broken"
 
+    # vllm backend: same interface, lazy load; falls back to HF with a
+    # warning when the vllm package isn't installed (this box)
+    llm_v = LocalLLM(backend="vllm")
+    assert type(llm_v.backend).__name__ in ("VLLMBackend", "HFBackend")
+    assert hasattr(llm_v.backend, "generate")
+    assert hasattr(llm_v.backend, "stream")
+    assert not llm_v.backend.loaded  # nothing loaded until first generate
+
     print("llm-service smoke OK")
 
 

@@ -81,6 +81,16 @@ Reading it honestly:
 - On CPU, int8 speed is roughly on par at this scale (slightly faster chat, slightly slower streaming — dequantize overhead and smaller memory traffic mostly cancel out at 0.5B). Expect the memory win to matter more than speed until you're on bigger models.
 - Quality: the greedy spot-check produced byte-identical text under INT8, and structured extraction (`extract_json`) returned valid JSON on both. No visible quality loss on these prompts — with one caveat: an earlier INT8 run failed the extract retry loop once, so treat 0.5B-scale int8 structured output as mildly flaky rather than bulletproof. `bench.py` now records a failed extract as `extract_ok=False` instead of crashing, so the comparison table always prints.
 
+**vLLM backend** (`backend: vllm` in `config.yaml`):
+
+Same `generate`/`stream` interface as the other backends, but served by [vLLM](https://github.com/vllm-project/vllm) — paged attention and continuous batching, so much higher tokens/sec on a GPU. Needs `pip install vllm` and a CUDA GPU (vLLM doesn't do CPU); on a box without the package the service warns at startup and falls back to the HF backend with the same model. Compare the two engines head-to-head with:
+
+```bash
+python3 bench.py --backends vllm,hf
+```
+
+Each backend gets its own row (vLLM vs FP16/INT8) with chat tok/s, stream tok/s and TTFT, plus the same greedy spot-check and `extract_json` validation the quantization table uses. `vllm_quantization: awq | gptq` in `config.yaml` passes through to vLLM for pre-quantized checkpoints. No vLLM numbers committed yet — that needs CUDA hardware; the command above is how you produce the row.
+
 **API server:**
 
 ```bash
@@ -117,7 +127,7 @@ model.py          LocalLLM: chat / chat_stream / extract_json (retry loop)
 app.py            FastAPI: /chat, /chat/stream (SSE), /extract, /info
 prompts/v1/       versioned prompt templates — files, not inline strings
 bench.py          latency + throughput, straight against the backend (no HTTP)
-config.yaml       backend: mock | hf, quantization: none | 8bit — the knobs
+config.yaml       backend: mock | hf | vllm, quantization: none | 8bit — the knobs
                   to swap backends or halve weight memory
 test_smoke.py     sanity checks for chat, streaming, extraction, retries, prompts
 ```

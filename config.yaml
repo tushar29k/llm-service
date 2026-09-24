@@ -1,7 +1,11 @@
-backend: mock        # mock | hf
+backend: mock        # mock | hf | vllm — vllm needs the vllm package + a
+                    # CUDA GPU; without it the service warns at startup
+                    # and falls back to the hf backend
 model_id: Qwen/Qwen2-0.5B-Instruct   # verified small default for the hf backend
 dtype: float16
 quantization: none    # none | 8bit — int8 weights via bitsandbytes (halves
                       # weight memory, works on CPU); falls back to none
                       # with a logged warning if the 8-bit load fails
+vllm_quantization: none   # none | awq | gptq — passed to vllm's LLM();
+                          # only for pre-quantized checkpoints
 prompt_dir: prompts/v1
