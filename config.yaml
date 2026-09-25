@@ -9,3 +9,7 @@ quantization: none    # none | 8bit — int8 weights via bitsandbytes (halves
 vllm_quantization: none   # none | awq | gptq — passed to vllm's LLM();
                           # only for pre-quantized checkpoints
 prompt_dir: prompts/v1
+lazy_load: true     # true = model loads on the first request (cheap boot,
+                    # slow first request); false = warm it up at startup
+                    # (slower boot, fast first request) — flip to false on
+                    # prod/Render, where a 20s first hit looks like a bug
