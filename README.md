@@ -117,14 +117,46 @@ curl -X POST localhost:8000/extract \
 
 # what's running
 curl localhost:8000/info
+
+# OpenAI-compatible endpoint — works with the openai client library unchanged
+# (just point base_url at this service). Same response contract:
+# chat.completion objects, chat.completion.chunk SSE chunks, `data: [DONE]`
+# terminator, usage token counts.
+curl -X POST localhost:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "Qwen/Qwen2-0.5B-Instruct",
+       "messages": [{"role": "user", "content": "hi"}],
+       "max_tokens": 64, "stream": false}'
 ```
+
+Python, straight through the official client:
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+resp = client.chat.completions.create(
+    model="Qwen/Qwen2-0.5B-Instruct",
+    messages=[{"role": "user", "content": "hi"}],
+)
+print(resp.choices[0].message.content)
+
+for chunk in client.chat.completions.create(
+    model="Qwen/Qwen2-0.5B-Instruct",
+    messages=[{"role": "user", "content": "hi"}], stream=True,
+):
+    print(chunk.choices[0].delta.content or "", end="")
+```
+
+Token counts in `usage` are whitespace-word estimates — close enough for the
+mock backend; swap in a real tokenizer when you move off it.
 
 ## Project layout
 
 ```
 model.py          LocalLLM: chat / chat_stream / extract_json (retry loop)
                   MockBackend (instant fake) / HFBackend (real transformers model)
-app.py            FastAPI: /chat, /chat/stream (SSE), /extract, /info
+app.py            FastAPI: /chat, /chat/stream (SSE), /extract, /info,
+                  /v1/chat/completions (OpenAI-compatible)
 prompts/v1/       versioned prompt templates — files, not inline strings
 bench.py          latency + throughput, straight against the backend (no HTTP)
 config.yaml       backend: mock | hf | vllm, quantization: none | 8bit — the knobs
