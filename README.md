@@ -165,7 +165,7 @@ weights, no GPU, no SDK; just HTTPS to a free API tier:
 |---|---|
 | `LLM_API_KEY` | your key — this alone flips the demo to real-model mode |
 | `LLM_PROVIDER` | `gemini` (default) or `openrouter` |
-| `LLM_MODEL` | override the default model (`gemini-2.0-flash`, or `openai/gpt-oss-20b:free` on OpenRouter) |
+| `LLM_MODEL` | override the default model (`gemini-3.8-flash`, or `openai/gpt-oss-20b:free` on OpenRouter) |
 | `LLM_AUTO` | set to `0` to keep the mock even with a key set |
 
 Free keys that work: **Google AI Studio** (free tier, no card required) for
