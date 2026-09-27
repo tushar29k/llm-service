@@ -44,6 +44,10 @@ h1 .neb{color:var(--vio)}
 .badge{font-size:.75rem;color:var(--muted);border:1px solid var(--line);border-radius:999px;
   padding:.3rem .9rem;background:rgba(139,92,246,.08);backdrop-filter:blur(4px)}
 .badge b{color:var(--cyan);font-weight:600}
+/* llm status: green when a real model answers, amber on the offline mock */
+.badge.live{color:#4ade80;border-color:rgba(74,222,128,.45)}
+.badge.live b{color:#4ade80}
+.badge.mock{color:#fbbf24;border-color:rgba(251,191,36,.4)}
 .sub{color:var(--muted);font-size:.92rem;margin-bottom:1.6rem}
 /* thin aurora divider */
 .rule{height:1px;margin:0 0 1.4rem;border:0;
@@ -122,8 +126,10 @@ label{color:var(--muted);font-size:.85rem;display:block;margin:.6rem 0}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function show(w){['chat','extract'].forEach(function(x){document.getElementById('pane-'+x).classList.toggle('hidden',x!==w);document.getElementById('tab-'+x).classList.toggle('active',x===w)})}
 fetch('/info').then(function(r){return r.json()}).then(function(i){
-  document.getElementById('info').innerHTML='backend: <b>'+esc(i.backend)+'</b>'+(i.model?' · '+esc(i.model):'');
-}).catch(function(){document.getElementById('info').textContent='backend: unknown'});
+  var el=document.getElementById('info');
+  if(i.real_llm){el.innerHTML='● live LLM · <b>'+esc(i.model||'')+'</b>';el.classList.add('live')}
+  else{el.textContent='● offline mock';el.classList.add('mock')}
+}).catch(function(){document.getElementById('info').textContent='● status unknown'});
 
 var chatLog=[];
 var statusEl=document.getElementById('status');

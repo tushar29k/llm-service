@@ -169,9 +169,28 @@ weights, no GPU, no SDK; just HTTPS to a free API tier:
 | `LLM_AUTO` | set to `0` to keep the mock even with a key set |
 
 Free keys that work: **Google AI Studio** (free tier, no card required) for
-Gemini, or an **OpenRouter** key hitting any `:free` model slug. On the
-live Render demo, set them as environment variables in the Render
-dashboard — no redeploy needed, the next request picks them up.
+Gemini, or an **OpenRouter** key hitting any `:free` model slug.
+
+### Use your own key
+
+The live demo above runs on the author's key. To point your own copy at a
+real model:
+
+1. **Get a free key.** Go to `aistudio.google.com/api-keys` and click
+   **Create API key** — pick "Create API key in new project" (no Cloud
+   project and no credit card needed). Alternative: an OpenRouter key
+   (`openrouter.ai`) used with a `:free` model slug.
+2. **Local run:** `export LLM_API_KEY=your-key-here` before starting the
+   server — or put it in a `.env` file you never commit.
+3. **Render deploy:** dashboard → your service → Environment → add
+   `LLM_API_KEY` → Save. Render redeploys automatically and the fresh
+   build reads the key at startup (the backend is chosen once at import,
+   so a restart is required — there is no hot-swap).
+4. **Confirm it's live:** the badge in the demo header turns green
+   (`● live LLM · gemini-3.8-flash`), or `GET /info` returns
+   `"real_llm": true`.
+5. **Keep the key safe:** keys live in environment variables or a secret
+   manager only — never in code, never in a commit.
 
 What changes with a key set: `/chat`, `/chat/stream`, `/extract`, and
 `/v1/chat/completions` all call the real model behind the same response

@@ -57,12 +57,13 @@ def info():
         loaded = llm.backend.loaded
         if loaded:
             params = sum(p.numel() for p in llm.backend.model.parameters())
-    real = backend == "APIBackend"
-    return {"backend": backend, "model": llm.cfg.get("model_id"),
+    real = backend == "APIBackend" and getattr(llm.backend, "client", None) is not None
+    client = getattr(llm.backend, "client", None)
+    return {"backend": backend,
+            "model": client.model if real else llm.cfg.get("model_id"),
             "params": params, "loaded": loaded,
             "real_llm": real,  # True when a live API model is behind this
-            "provider": getattr(getattr(llm.backend, "client", None),
-                                "label", None) if real else None}
+            "provider": client.provider if real else None}
 
 
 # -- openai-compatible chat completions --------------------------------------
