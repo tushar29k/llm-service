@@ -52,6 +52,12 @@ llm-service smoke OK
 
 If anything's broken, an assertion tells you which part.
 
+**Extract eval** — a 10-case spot-check set for `extract_json` (nested fields, arrays, number/date formats, plus malformed-first and missing-field retry recovery), run against the mock by default or any backend via `--backend`/`LLM_BACKEND`:
+
+```bash
+python3 evals/run_extract_eval.py
+```
+
 **Benchmark** — latency, time-to-first-token, and throughput:
 
 ```bash
