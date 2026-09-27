@@ -14,11 +14,18 @@ package and CUDA; falls back to HFBackend with a warning without it.
 
 Swap between them with one line in config.yaml:  backend: mock -> hf -> vllm
 
+APIBackend: a real model over a free HTTPS API (Gemini / OpenRouter) via
+llm_client.py — no SDK, no weights, works on Render's free tier. Selected
+with backend: api, or automatically when LLM_API_KEY is set (LLM_AUTO=0
+disables the auto-select). Falls back to the mock with a note when the
+call fails.
+
 Startup: backends load lazily by default (the first request pays the load
 cost). Set lazy_load: false in config.yaml to warm the model up at startup
 instead — slower boot, fast first request.
 """
 import json
+import sys
 import time
 import re
 
@@ -245,6 +252,46 @@ class VLLMBackend:
 
 
 # ---------------------------------------------------------------- LLM
+class APIBackend:
+    """Real model over a free API (Gemini / OpenRouter) via llm_client.
+
+    No SDK, no weights — just HTTPS, so it runs fine on Render's free
+    tier. generate() falls back to the mock (with a visible note) when
+    the call fails, so the service never breaks for demo traffic."""
+
+    def __init__(self):
+        from llm_client import FreeLLMClient
+        self.client = FreeLLMClient.from_env()
+        if self.client is None:
+            raise RuntimeError(
+                "api backend needs LLM_API_KEY in the environment "
+                "(unset key -> the mock backend stays the default)")
+        self._mock = MockBackend()
+
+    @property
+    def loaded(self):
+        return True  # nothing to load — it's just HTTPS
+
+    def warmup(self):
+        pass  # nothing local to warm; keep startup network-free
+
+    def generate(self, prompt, max_new_tokens=256, temperature=0.7):
+        try:
+            return self.client.generate(prompt, max_tokens=max_new_tokens,
+                                       temperature=temperature)
+        except Exception as e:  # llm_client only ever raises FreeLLMError
+            print(f"api backend: model call failed ({e}) — mock instead",
+                  file=sys.stderr)
+            return (self._mock.generate(prompt, max_new_tokens)
+                    + "\n\n[model unavailable — showing offline mock result]")
+
+    def stream(self, prompt, max_new_tokens=256):
+        # these APIs can stream, but this client keeps it simple — chunk
+        # the finished text like MockBackend does
+        for word in self.generate(prompt, max_new_tokens).split():
+            yield word + " "
+
+
 class LocalLLM:
     def __init__(self, config_path="config.yaml", quantization=None,
                  backend=None):
@@ -270,6 +317,8 @@ class LocalLLM:
             self.backend = HFBackend(self.cfg["model_id"],
                                      self.cfg.get("dtype", "float16"),
                                      quantization=q)
+        elif which == "api":
+            self.backend = APIBackend()
         else:
             self.backend = MockBackend()
         # prompts live as versioned files, not inline strings — much easier

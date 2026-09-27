@@ -13,7 +13,19 @@ except ImportError as e:
 
 from model import LocalLLM
 
-llm = LocalLLM()   # load once at startup — model init is expensive,
+import os
+
+
+def _backend_choice():
+    # key set (and not explicitly disabled) -> the real model; otherwise
+    # the configured backend in config.yaml (mock by default)
+    if os.environ.get("LLM_API_KEY") and \
+            os.environ.get("LLM_AUTO", "1") not in ("0", "false", "no"):
+        return "api"
+    return None
+
+
+llm = LocalLLM(backend=_backend_choice())   # load once at startup — model init is expensive,
                    # never do this per request
 app = FastAPI(title="llm-service")
 
@@ -45,8 +57,12 @@ def info():
         loaded = llm.backend.loaded
         if loaded:
             params = sum(p.numel() for p in llm.backend.model.parameters())
+    real = backend == "APIBackend"
     return {"backend": backend, "model": llm.cfg.get("model_id"),
-            "params": params, "loaded": loaded}
+            "params": params, "loaded": loaded,
+            "real_llm": real,  # True when a live API model is behind this
+            "provider": getattr(getattr(llm.backend, "client", None),
+                                "label", None) if real else None}
 
 
 # -- openai-compatible chat completions --------------------------------------

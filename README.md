@@ -156,18 +156,47 @@ for chunk in client.chat.completions.create(
 Token counts in `usage` are whitespace-word estimates — close enough for the
 mock backend; swap in a real tokenizer when you move off it.
 
+## Real LLM mode
+
+The demo ships in mock mode, but one env var turns on a real model — no
+weights, no GPU, no SDK; just HTTPS to a free API tier:
+
+| env | what it does |
+|---|---|
+| `LLM_API_KEY` | your key — this alone flips the demo to real-model mode |
+| `LLM_PROVIDER` | `gemini` (default) or `openrouter` |
+| `LLM_MODEL` | override the default model (`gemini-2.0-flash`, or `openai/gpt-oss-20b:free` on OpenRouter) |
+| `LLM_AUTO` | set to `0` to keep the mock even with a key set |
+
+Free keys that work: **Google AI Studio** (free tier, no card required) for
+Gemini, or an **OpenRouter** key hitting any `:free` model slug. On the
+live Render demo, set them as environment variables in the Render
+dashboard — no redeploy needed, the next request picks them up.
+
+What changes with a key set: `/chat`, `/chat/stream`, `/extract`, and
+`/v1/chat/completions` all call the real model behind the same response
+contract, so the UI works unchanged. `/info` reports `"real_llm": true`
+and the `provider:model` label. Without a key (or if the API call fails —
+20s timeout, one retry on 429/5xx), the mock answers instead and the
+response carries a `[model unavailable — showing offline mock result]`
+note, so the demo never breaks.
+
 ## Project layout
 
 ```
+llm_client.py     free-tier LLM client (gemini | openrouter), stdlib only
 model.py          LocalLLM: chat / chat_stream / extract_json (retry loop)
                   MockBackend (instant fake) / HFBackend (real transformers model)
+                  / VLLMBackend (vLLM) / APIBackend (free API, see above)
 app.py            FastAPI: /chat, /chat/stream (SSE), /extract, /info,
                   /v1/chat/completions (OpenAI-compatible)
 prompts/v1/       versioned prompt templates — files, not inline strings
 bench.py          latency + throughput, straight against the backend (no HTTP)
-config.yaml       backend: mock | hf | vllm, quantization: none | 8bit — the knobs
+config.yaml       backend: mock | hf | vllm | api, quantization: none | 8bit — the knobs
                   to swap backends or halve weight memory
 test_smoke.py     sanity checks for chat, streaming, extraction, retries, prompts
+test_llm_client.py  client tests: no-key -> mock path, request shapes (mocked
+                  HTTP, never a real API), retry on 429, key never in errors
 ```
 
 ## Honest notes
