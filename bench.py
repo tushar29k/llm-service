@@ -45,6 +45,7 @@ def bench_one(quant, backend=None, max_new_tokens=60):
     resp = llm.chat(MESSAGES, max_new_tokens=max_new_tokens)
     dt = time.perf_counter() - t0
     toks = len(resp.split())
+    chat_ms = dt * 1000
     chat_tps = toks / dt
 
     t0 = time.perf_counter()
@@ -55,6 +56,7 @@ def bench_one(quant, backend=None, max_new_tokens=60):
             first = True
         toks += len(tok.split())
     dt = time.perf_counter() - t0
+    stream_ms = dt * 1000
     stream_tps = toks / dt
 
     sample = llm.chat(SPOT, max_new_tokens=40, temperature=0.0)
@@ -73,6 +75,8 @@ def bench_one(quant, backend=None, max_new_tokens=60):
         "backend": type(llm.backend).__name__,
         "requested": backend or llm.cfg.get("backend", "mock"),
         "hf": type(llm.backend).__name__ == "HFBackend",
+        # totals so the README table can show TTFT / total / tok-s per backend
+        "chat_total_ms": chat_ms, "stream_total_ms": stream_ms,
         "chat_tps": chat_tps,
         "ttft_ms": t_first * 1000, "stream_tps": stream_tps,
         "weight_mb": weight_mb(llm),
@@ -107,14 +111,14 @@ def print_run(r):
 def print_table(rows):
     # the backend head-to-head this whole item is about
     print()
-    print("backend   quant   weights   chat tok/s   stream tok/s   "
-          "stream TTFT   extract ok   quality spot-check (greedy, 40 tok)")
+    print("backend   quant   weights   chat total   chat tok/s   "
+          "stream total   stream TTFT   stream tok/s")
     for r in rows:
         w = f"{r['weight_mb']:.0f}MB" if r["weight_mb"] else "n/a"
         print(f"{label(r):9} {r['quant']:7} "
-              f"{w:9} {r['chat_tps']:>10.1f} {r['stream_tps']:>13.1f} "
-              f"{r['ttft_ms']:>12.0f}ms   {str(r['extract_ok']):11} "
-              f"{r['sample'][:70]}")
+              f"{w:9} {r['chat_total_ms']:>9.0f}ms {r['chat_tps']:>11.1f} "
+              f"{r['stream_total_ms']:>10.0f}ms {r['ttft_ms']:>12.0f}ms "
+              f"{r['stream_tps']:>12.1f}")
 
 
 def main():

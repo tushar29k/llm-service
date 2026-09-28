@@ -97,6 +97,22 @@ python3 bench.py --backends vllm,hf
 
 Each backend gets its own row (vLLM vs FP16/INT8) with chat tok/s, stream tok/s and TTFT, plus the same greedy spot-check and `extract_json` validation the quantization table uses. `vllm_quantization: awq | gptq` in `config.yaml` passes through to vLLM for pre-quantized checkpoints. No vLLM numbers committed yet — that needs CUDA hardware; the command above is how you produce the row.
 
+**Backend comparison — TTFT / total / tok-s** (run with `python3 bench.py --backends mock,hf`):
+
+Measured 2026-09-28 — CPU-only box, `Qwen2-0.5B-Instruct` served from the local HF cache, 60 new tokens per call, 40-token greedy spot-check:
+
+| backend | weights  | chat total | chat tok/s | stream TTFT | stream total | stream tok/s |
+|---------|----------|------------|------------|-------------|--------------|--------------|
+| mock    | n/a      | ~0 ms      | 1,683,502  | 5 ms        | 82 ms        | 196          |
+| FP16 (hf) | 1976 MB | 26,739 ms | 2.0       | 543 ms      | 5,797 ms     | 5.5          |
+| vLLM    | —        | —          | —          | —           | —            | —            |
+
+Reading it honestly:
+
+- The mock row isn't a model at all — templated answers, so its totals only measure the scaffolding (prompt building, SSE fan-out). Its purpose is a baseline: everything slower than this is model time, not plumbing.
+- The FP16 row is really float32 on CPU (494M params × 4 B ≈ 2.0 GB), same as the 2026-09-23 quantization table — the numbers agree (2.0 vs 2.1 tok/s chat, 543 vs 537 ms TTFT), so the measurement is reproducible run to run.
+- vLLM has no row: the `vllm` package isn't installed on this box and there is no CUDA GPU — `bench.py` warns and falls back to the HF backend there. The row stays `—` until someone runs the head-to-head on a GPU machine with `python3 bench.py --backends vllm,hf`.
+
 **API server:**
 
 ```bash
