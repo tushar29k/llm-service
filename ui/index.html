@@ -127,7 +127,8 @@ function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){retur
 function show(w){['chat','extract'].forEach(function(x){document.getElementById('pane-'+x).classList.toggle('hidden',x!==w);document.getElementById('tab-'+x).classList.toggle('active',x===w)})}
 fetch('/info').then(function(r){return r.json()}).then(function(i){
   var el=document.getElementById('info');
-  if(i.real_llm){el.innerHTML='● live LLM · <b>'+esc(i.model||'')+'</b>';el.classList.add('live')}
+  if(i.real_llm && !i.last_error){el.innerHTML='● live LLM · <b>'+esc(i.model||'')+'</b>';el.classList.add('live')}
+  else if(i.real_llm){el.innerHTML='● live LLM · <b>'+esc(i.model||'')+'</b> · api hiccup';el.classList.add('mock')}
   else{el.textContent='● offline mock';el.classList.add('mock')}
 }).catch(function(){document.getElementById('info').textContent='● status unknown'});
 

@@ -63,6 +63,7 @@ def info():
             "model": client.model if real else llm.cfg.get("model_id"),
             "params": params, "loaded": loaded,
             "real_llm": real,  # True when a live API model is behind this
+            "last_error": getattr(llm.backend, "last_error", None),
             "provider": client.provider if real else None}
 
 

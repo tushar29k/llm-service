@@ -267,6 +267,7 @@ class APIBackend:
                 "api backend needs LLM_API_KEY in the environment "
                 "(unset key -> the mock backend stays the default)")
         self._mock = MockBackend()
+        self.last_error = None  # last api failure, if any — surfaced on /info
 
     @property
     def loaded(self):
@@ -277,9 +278,12 @@ class APIBackend:
 
     def generate(self, prompt, max_new_tokens=256, temperature=0.7):
         try:
-            return self.client.generate(prompt, max_tokens=max_new_tokens,
+            out = self.client.generate(prompt, max_tokens=max_new_tokens,
                                        temperature=temperature)
+            self.last_error = None  # recovered — badge goes green again
+            return out
         except Exception as e:  # llm_client only ever raises FreeLLMError
+            self.last_error = str(e)  # key-free by construction — safe for /info
             print(f"api backend: model call failed ({e}) — mock instead",
                   file=sys.stderr)
             return (self._mock.generate(prompt, max_new_tokens)
