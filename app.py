@@ -67,6 +67,84 @@ def info():
             "provider": client.provider if real else None}
 
 
+# -- rate limiting -------------------------------------------------------------
+# token bucket per api key: a cheap guardrail so one client can't hammer
+# the model. keyed off the X-API-Key header, falling back to a shared
+# default bucket — real api-key auth lands in a later item, this is just
+# about fair usage until then.
+import time as _rt_time
+import math as _rt_math
+import threading as _rt_threading
+from fastapi.responses import JSONResponse as _JSONResponse
+
+_rate_cfg = llm.cfg.get("rate_limit") or {}
+
+
+class _TokenBucket:
+    # refills `rate` tokens/sec, holds at most `capacity` (the burst)
+    def __init__(self, rate, capacity):
+        self.rate = rate
+        self.capacity = capacity
+        self.tokens = float(capacity)
+        self.updated = _rt_time.monotonic()
+        self.lock = _rt_threading.Lock()
+
+    def take(self):
+        # True when the request may go through, else seconds to wait
+        now = _rt_time.monotonic()
+        with self.lock:
+            # top up for the time since the last request — no background thread
+            self.tokens = min(self.capacity,
+                              self.tokens + (now - self.updated) * self.rate)
+            self.updated = now
+            if self.tokens >= 1:
+                self.tokens -= 1
+                return True
+            wait = (1 - self.tokens) / self.rate if self.rate else 60
+            return max(1, _rt_math.ceil(wait))
+
+
+class _RateLimiter:
+    def __init__(self, rate, capacity, enabled=True):
+        self.rate = rate
+        self.capacity = capacity
+        self.enabled = enabled
+        self._buckets = {}          # api-key value -> _TokenBucket
+        self._lock = _rt_threading.Lock()
+
+    def key_of(self, request):
+        return request.headers.get("x-api-key") or "default"
+
+    def take(self, key):
+        if not self.enabled:
+            return True
+        with self._lock:
+            bucket = self._buckets.get(key)
+            if bucket is None:
+                bucket = self._buckets[key] = _TokenBucket(self.rate,
+                                                           self.capacity)
+        return bucket.take()
+
+
+limiter = _RateLimiter(_rate_cfg.get("rate_per_sec", 10.0),
+                       _rate_cfg.get("burst", 30),
+                       _rate_cfg.get("enabled", True))
+
+# the demo page and /info are observability, not model spend — never throttled
+_NO_LIMIT = ("/", "/info", "/docs", "/openapi.json", "/redoc")
+
+
+@app.middleware("http")
+async def _rate_limit(request, call_next):
+    if request.url.path not in _NO_LIMIT:
+        wait = limiter.take(limiter.key_of(request))
+        if wait is not True:
+            return _JSONResponse(
+                {"detail": "rate limit exceeded — slow down and retry"},
+                status_code=429, headers={"Retry-After": str(wait)})
+    return await call_next(request)
+
+
 # -- openai-compatible chat completions --------------------------------------
 # speaks the openai request/response contract: messages in, chat.completion
 # out (or an sse stream of chat.completion.chunk), so existing openai client

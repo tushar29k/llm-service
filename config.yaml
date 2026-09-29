@@ -13,3 +13,11 @@ lazy_load: true     # true = model loads on the first request (cheap boot,
                     # slow first request); false = warm it up at startup
                     # (slower boot, fast first request) — flip to false on
                     # prod/Render, where a 20s first hit looks like a bug
+rate_limit:         # token bucket per api key — cheap guardrail so one
+                    # client can't hammer the model backend. keyed on the
+                    # X-API-Key header; without one everyone shares a
+                    # default bucket (real per-key auth lands in a later
+                    # item). / and /info are never throttled
+  enabled: true
+  rate_per_sec: 10.0  # sustained requests/second per key
+  burst: 30           # how many requests can land at once
