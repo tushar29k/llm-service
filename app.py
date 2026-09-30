@@ -145,6 +145,52 @@ async def _rate_limit(request, call_next):
     return await call_next(request)
 
 
+# -- api key auth ----------------------------------------------------------------
+# real per-key auth to sit alongside the rate limiter. keys come from the
+# env (LLM_API_KEYS, comma-separated) or the `auth.keys` list in
+# config.yaml. enforcement only kicks in when at least one key is
+# configured — empty means open access, so local dev and the keyless demo
+# keep working without surprises. with keys set, anything but a matching
+# key gets a 401 and never reaches the model.
+_auth_cfg = llm.cfg.get("auth") or {}
+
+
+def _configured_keys():
+    keys = set(_auth_cfg.get("keys") or [])
+    # env lets you rotate keys without touching the config file
+    keys.update(k.strip() for k in os.environ.get("LLM_API_KEYS", "").split(",")
+                if k.strip())
+    return keys
+
+
+_KEYS = _configured_keys()
+
+
+def _key_from(request):
+    # X-API-Key header, same as the rate limiter — or the classic
+    # Authorization: Bearer scheme for openai-style clients
+    key = request.headers.get("x-api-key")
+    if key:
+        return key
+    authz = request.headers.get("authorization") or ""
+    scheme, _, token = authz.partition(" ")
+    if scheme.lower() == "bearer" and token:
+        return token
+    return None
+
+
+# registered after the rate limiter, so it runs first: a 401 shouldn't
+# cost the caller any rate-limit tokens
+@app.middleware("http")
+async def _require_api_key(request, call_next):
+    if request.url.path not in _NO_LIMIT and _KEYS:
+        if _key_from(request) not in _KEYS:
+            return _JSONResponse({"detail": "invalid or missing api key"},
+                                 status_code=401,
+                                 headers={"WWW-Authenticate": "Bearer"})
+    return await call_next(request)
+
+
 # -- openai-compatible chat completions --------------------------------------
 # speaks the openai request/response contract: messages in, chat.completion
 # out (or an sse stream of chat.completion.chunk), so existing openai client

@@ -21,3 +21,9 @@ rate_limit:         # token bucket per api key — cheap guardrail so one
   enabled: true
   rate_per_sec: 10.0  # sustained requests/second per key
   burst: 30           # how many requests can land at once
+auth:             # api key auth — who gets to call the model. keys from the
+                  # env (LLM_API_KEYS, comma-separated) or the list below.
+                  # empty = open access (local dev, the keyless demo); set at
+                  # least one and everything but / and /info needs a valid key
+                  # (X-API-Key header or Authorization: Bearer) or gets a 401
+  keys: []        # e.g. ["team-alpha-…"]
