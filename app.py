@@ -191,6 +191,206 @@ async def _require_api_key(request, call_next):
     return await call_next(request)
 
 
+# -- request logging -------------------------------------------------------------
+# one json line per request — latency, token counts, cost estimate — appended
+# to logs/requests.jsonl (or LLM_REQUEST_LOG). registered last so it wraps the
+# auth + rate-limit middlewares and the latency covers the whole request path.
+# written after the response goes out, so streamed replies count their tokens
+# as chunks fly by and the log lands once the stream is fully sent. cheap
+# locked appends, and it never raises — logging must not break the request.
+from datetime import datetime as _dt, timezone as _tz
+import hashlib as _log_hash
+from starlette.background import BackgroundTask as _BackgroundTask
+
+_LOG_CFG = llm.cfg.get("logging") or {}
+
+
+def _log_enabled():
+    v = os.environ.get("LLM_REQUEST_LOG", "")
+    if v.lower() in ("off", "0", "false", "no", "disabled"):
+        return False
+    return bool(_LOG_CFG.get("enabled", True))
+
+
+def _log_path():
+    p = os.environ.get("LLM_REQUEST_LOG")
+    if p and p.lower() not in ("off", "0", "false", "no", "disabled"):
+        return p
+    return _LOG_CFG.get("file") or _os.path.join(
+        _os.path.dirname(_os.path.abspath(__file__)), "logs", "requests.jsonl")
+
+
+_LOG_PATH = _log_path()
+_LOG_LOCK = _rt_threading.Lock()
+
+# $ per 1M tokens — local backends cost nothing but time; the api backend
+# defaults to rough gemini-flash rates, env beats config beats default
+_API_PROMPT_PRICE = float(os.environ.get(
+    "LLM_COST_PROMPT_PER_1M", _LOG_CFG.get("cost_prompt_per_1m", 0.50)))
+_API_COMPLETION_PRICE = float(os.environ.get(
+    "LLM_COST_COMPLETION_PER_1M", _LOG_CFG.get("cost_completion_per_1m", 1.50)))
+
+
+def _backend_key():
+    return type(llm.backend).__name__.replace("Backend", "").lower()
+
+
+def _cost_usd(prompt_tokens, completion_tokens):
+    if _backend_key() != "api":
+        return 0.0
+    return ((prompt_tokens or 0) * _API_PROMPT_PRICE +
+            (completion_tokens or 0) * _API_COMPLETION_PRICE) / 1e6
+
+
+def _prompt_words(data):
+    # pull the user text out of the request body for the known endpoints —
+    # word count is close enough for usage accounting without a tokenizer
+    msgs = data.get("messages")
+    if isinstance(msgs, list):
+        text = " ".join(m.get("content", "") for m in msgs
+                        if isinstance(m, dict))
+    else:
+        text = data.get("prompt", "") or ""
+    return text
+
+
+def _completion_words(path, data):
+    if not isinstance(data, dict):
+        return None
+    usage = data.get("usage")
+    if isinstance(usage, dict) and usage.get("completion_tokens") is not None:
+        return usage["completion_tokens"]  # /v1/chat/completions already counted
+    if "response" in data:
+        return len(str(data["response"]).split())
+    return len(_json.dumps(data).split())
+
+
+def _sse_words(chunk):
+    # count words inside sse payloads — plain token chunks (chat/stream) and
+    # openai-style chat.completion.chunk json both
+    if isinstance(chunk, bytes):
+        chunk = chunk.decode("utf-8", "replace")
+    n = 0
+    for line in chunk.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload == "[DONE]":
+            continue
+        if payload.startswith("{"):
+            try:
+                d = _json.loads(payload)
+                n += sum(len((c.get("delta") or {}).get("content", "").split())
+                         for c in d.get("choices", []))
+                continue
+            except Exception:
+                pass
+        n += len(payload.split())
+    return n
+
+
+async def _count_stream(body_iter, counter):
+    # wrap a stream's iterator, counting completion words as chunks pass
+    # through — the response shape is untouched, only the counting rides along
+    async for chunk in body_iter:
+        if not isinstance(chunk, dict):  # dict = passthrough asgi message
+            counter["n"] += _sse_words(chunk)
+        yield chunk
+
+
+def _write_log(entry):
+    pt, ct = entry.get("prompt_tokens"), entry.get("completion_tokens")
+    entry["total_tokens"] = ((pt or 0) + (ct or 0)
+                             if pt is not None or ct is not None else None)
+    entry["cost_usd"] = round(_cost_usd(pt, ct), 8)
+    try:
+        parent = _os.path.dirname(_LOG_PATH)
+        if parent:
+            _os.makedirs(parent, exist_ok=True)
+        with _LOG_LOCK:
+            with open(_LOG_PATH, "a") as f:
+                f.write(_json.dumps(entry) + "\n")
+    except Exception:
+        pass  # a full disk shouldn't 500 anyone's chat request
+
+
+@app.middleware("http")
+async def _request_logger(request, call_next):
+    if not _log_enabled():
+        return await call_next(request)
+    start = _rt_time.monotonic()
+    prompt_tokens = None
+    if request.method in ("POST", "PUT") and \
+            "json" in (request.headers.get("content-type") or ""):
+        try:
+            data = _json.loads(await request.body())
+            if isinstance(data, dict):
+                prompt_tokens = len(_prompt_words(data).split())
+        except Exception:
+            prompt_tokens = None
+    key = _key_from(request)
+    response = await call_next(request)
+    latency_ms = (_rt_time.monotonic() - start) * 1000
+    # starlette hands middleware a _StreamingResponse whose body only exists
+    # as an async iterator — streams are the text/event-stream ones, the rest
+    # get buffered so completion tokens can be counted from the json body
+    is_stream = "text/event-stream" in (response.headers.get("content-type")
+                                        or "")
+    entry = {
+        "ts": _dt.now(_tz.utc).isoformat(),
+        "method": request.method,
+        "path": request.url.path,
+        "status": response.status_code,
+        "latency_ms": round(latency_ms, 1),
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": None,
+        "backend": _backend_key(),
+        # sha of the key, not the key — useful for per-key usage without
+        # writing secrets to disk
+        "key_hash": _log_hash.sha256(key.encode()).hexdigest()[:8]
+                    if key else None,
+        "stream": is_stream,
+    }
+    if is_stream:
+        # completion tokens get counted as chunks fly by; the log lands once
+        # the stream is fully sent, via the response background hook
+        counter = {"n": 0}
+        response.body_iterator = _count_stream(response.body_iterator,
+                                               counter)
+        prev_bg = response.background
+
+        async def _finalize():
+            entry["completion_tokens"] = counter["n"]
+            _write_log(entry)
+            if prev_bg is not None:
+                await prev_bg()
+        response.background = _BackgroundTask(_finalize)
+    else:
+        chunks = []
+        async for chunk in response.body_iterator:
+            if isinstance(chunk, dict):
+                chunks.append(chunk)  # passthrough asgi message, not body
+            else:
+                chunks.append(chunk if isinstance(chunk, bytes)
+                              else str(chunk).encode())
+
+        async def _replay():
+            for ch in chunks:
+                yield ch
+        response.body_iterator = _replay()
+
+        body = b"".join(c for c in chunks if isinstance(c, bytes))
+        if body:
+            try:
+                entry["completion_tokens"] = _completion_words(
+                    request.url.path, _json.loads(body))
+            except Exception:
+                entry["completion_tokens"] = None
+        _write_log(entry)
+    return response
+
+
 # -- openai-compatible chat completions --------------------------------------
 # speaks the openai request/response contract: messages in, chat.completion
 # out (or an sse stream of chat.completion.chunk), so existing openai client

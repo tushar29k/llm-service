@@ -27,3 +27,10 @@ auth:             # api key auth — who gets to call the model. keys from the
                   # least one and everything but / and /info needs a valid key
                   # (X-API-Key header or Authorization: Bearer) or gets a 401
   keys: []        # e.g. ["team-alpha-…"]
+logging:          # per-request jsonl log — latency, tokens, cost estimate
+  enabled: true   # LLM_REQUEST_LOG=off disables; a path there overrides file
+  file: logs/requests.jsonl   # one json object per line: ts, method, path,
+                  # status, latency_ms, prompt/completion/total_tokens,
+                  # cost_usd, backend, key_hash (sha, never the key), stream
+  cost_prompt_per_1m: 0.50      # $ per 1M tokens for the api backend
+  cost_completion_per_1m: 1.50  # local backends (mock/hf/vllm) always cost 0

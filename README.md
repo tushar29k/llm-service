@@ -232,7 +232,22 @@ config.yaml       backend: mock | hf | vllm | api, quantization: none | 8bit —
 test_smoke.py     sanity checks for chat, streaming, extraction, retries, prompts
 test_llm_client.py  client tests: no-key -> mock path, request shapes (mocked
                   HTTP, never a real API), retry on 429, key never in errors
+test_request_logging.py  fires 100 requests at the app and asserts the jsonl
+                  request log parses with latency/tokens/cost on every line
 ```
+
+## Request logging
+
+Every request is appended as one JSON line to `logs/requests.jsonl`
+(override with `LLM_REQUEST_LOG=<path>`, disable with
+`LLM_REQUEST_LOG=off`): timestamp, method, path, status, `latency_ms`,
+`prompt_tokens` / `completion_tokens` / `total_tokens` (word counts — no
+tokenizer on the mock backend), `cost_usd` (free for mock/hf/vllm; the api
+backend defaults to rough gemini-flash rates, overridable via
+`LLM_COST_PROMPT_PER_1M` / `LLM_COST_COMPLETION_PER_1M` or the
+`logging.cost_*` keys in config.yaml), plus a `key_hash` (sha of the API key,
+never the key itself) and a `stream` flag. Streams log once fully sent, so
+their latency covers the whole stream.
 
 ## Honest notes
 
