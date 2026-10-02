@@ -34,3 +34,13 @@ logging:          # per-request jsonl log — latency, tokens, cost estimate
                   # cost_usd, backend, key_hash (sha, never the key), stream
   cost_prompt_per_1m: 0.50      # $ per 1M tokens for the api backend
   cost_completion_per_1m: 1.50  # local backends (mock/hf/vllm) always cost 0
+cache:            # prompt cache — exact match first, optional semantic tier.
+                  # repeated prompts return the stored response without
+                  # touching the backend; stats land in /info.cache
+  enabled: true   # set false to bypass (nothing cached, nothing served)
+  ttl_seconds: 3600   # cached responses expire after this long
+  max_entries: 500    # lru-ish: the oldest-read entry drops past this
+  semantic:       # near-duplicate prompts — stdlib hashing embedding only
+                  # (SWAP: drop in a real embedder for production use)
+    enabled: false    # off by default — opt in when you want it
+    threshold: 0.97   # cosine similarity needed to count as the same prompt

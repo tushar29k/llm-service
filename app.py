@@ -32,8 +32,17 @@ app = FastAPI(title="llm-service")
 
 @app.post("/chat")
 def chat(body: dict):
-    return {"response": llm.chat(body["messages"],
-                                 max_new_tokens=body.get("max_tokens", 256))}
+    messages = body["messages"]
+    max_tokens = body.get("max_tokens", 256)
+    text = _prompt_text(messages)
+    key = _cache_key("chat", messages, max_tokens=max_tokens)
+    cached = _prompt_cache.get(key, text)
+    if cached is not None:
+        cached["cached"] = True  # caller can tell this skipped the model
+        return cached
+    resp = {"response": llm.chat(messages, max_new_tokens=max_tokens)}
+    _prompt_cache.put(key, text, resp)
+    return resp
 
 
 @app.post("/chat/stream")
@@ -46,6 +55,138 @@ def chat_stream(body: dict):
 @app.post("/extract")
 def extract(body: dict):
     return llm.extract_json(body["prompt"], body["required"])
+
+
+# -- prompt cache ---------------------------------------------------------------
+# exact-match cache in front of the model: a repeated (endpoint, backend,
+# model, messages, generation params) combo returns the stored response
+# without touching the backend. stats land in /info.cache — watch hit_rate
+# climb. the optional semantic tier catches near-duplicates with a
+# stdlib-only hashing embedding — SWAP: plug a real embedder here for
+# production; this one is just good enough to prove the plumbing works.
+import hashlib as _cache_hash
+import json as _cache_json
+import threading as _cache_threading
+import time as _cache_time
+
+_CACHE_CFG = llm.cfg.get("cache") or {}
+_SEM_CFG = _CACHE_CFG.get("semantic") or {}
+_CACHE_TTL = _CACHE_CFG.get("ttl_seconds", 3600)
+_CACHE_MAX = _CACHE_CFG.get("max_entries", 500)
+_SEM_ON = _SEM_CFG.get("enabled", False)
+_SEM_THRESH = _SEM_CFG.get("threshold", 0.97)
+
+
+def _hash_embed(text, dim=64):
+    # bag of hashed tokens — cosine similarity without any libraries.
+    # identical text scores 1.0, near-duplicates stay high, unrelated ~0
+    vec = [0.0] * dim
+    for tok in str(text).lower().split():
+        vec[int(_cache_hash.md5(tok.encode()).hexdigest(), 16) % dim] += 1.0
+    return vec
+
+
+def _cosine(a, b):
+    num = sum(x * y for x, y in zip(a, b))
+    den = (sum(x * x for x in a) ** 0.5) * (sum(y * y for y in b) ** 0.5)
+    return num / den if den else 0.0
+
+
+def _prompt_text(messages):
+    return "\n".join(f"{m.get('role', '')}: {m.get('content', '')}"
+                     for m in messages if isinstance(m, dict))
+
+
+def _cache_key(endpoint, messages, **params):
+    # backend + model are in the key so a config swap never serves
+    # another setup's answers
+    payload = [endpoint, type(llm.backend).__name__,
+               llm.cfg.get("model_id"), messages, params]
+    return _cache_hash.sha256(
+        _cache_json.dumps(payload, sort_keys=True, default=str).encode()
+    ).hexdigest()
+
+
+class _PromptCache:
+    # locked dict of key -> {resp, exp, seen, emb}; expiry checked on
+    # access, overflow evicts the oldest-read entry first
+    def __init__(self):
+        self.enabled = bool(_CACHE_CFG.get("enabled", True))
+        self.sem_enabled = bool(_SEM_ON)
+        self.sem_threshold = _SEM_THRESH
+        self._store = {}
+        self._lock = _cache_threading.Lock()
+        self.hits = 0
+        self.misses = 0
+        self.semantic_hits = 0
+
+    def reset(self):
+        # tests use this to start from a clean slate
+        with self._lock:
+            self._store.clear()
+            self.hits = self.misses = self.semantic_hits = 0
+
+    def get(self, key, prompt_text):
+        if not self.enabled:
+            return None
+        with self._lock:
+            now = _cache_time.monotonic()
+            rec = self._store.get(key)
+            if rec is not None:
+                if rec["exp"] <= now:
+                    del self._store[key]
+                else:
+                    rec["seen"] = now  # refresh lru-ness on the way out
+                    self.hits += 1
+                    return dict(rec["resp"])
+            if self.sem_enabled:
+                # near-duplicate path: cosine against stored embeddings
+                emb = _hash_embed(prompt_text)
+                best, best_sim = None, 0.0
+                for k, r in self._store.items():
+                    if r["exp"] <= now:
+                        continue
+                    sim = _cosine(emb, r["emb"])
+                    if sim > best_sim:
+                        best, best_sim = k, sim
+                if best is not None and best_sim >= self.sem_threshold:
+                    rec = self._store[best]
+                    rec["seen"] = now
+                    self.hits += 1
+                    self.semantic_hits += 1
+                    return dict(rec["resp"])
+            self.misses += 1
+            return None
+
+    def put(self, key, prompt_text, response):
+        if not self.enabled:
+            return
+        with self._lock:
+            now = _cache_time.monotonic()
+            # sweep the expired first, they're free entries back
+            for k in [k for k, r in self._store.items() if r["exp"] <= now]:
+                del self._store[k]
+            if len(self._store) >= max(1, _CACHE_MAX):
+                oldest = min(self._store, key=lambda k: self._store[k]["seen"])
+                del self._store[oldest]
+            self._store[key] = {
+                "resp": response, "exp": now + _CACHE_TTL, "seen": now,
+                "emb": _hash_embed(prompt_text)}
+
+    def stats(self):
+        with self._lock:
+            total = self.hits + self.misses
+            return {
+                "enabled": self.enabled,
+                "hits": self.hits,
+                "misses": self.misses,
+                "semantic_hits": self.semantic_hits,
+                "hit_rate": round(self.hits / total, 4) if total else 0.0,
+                "size": len(self._store),
+            }
+
+
+_prompt_cache = _PromptCache()
 
 
 @app.get("/info")
@@ -64,7 +205,8 @@ def info():
             "params": params, "loaded": loaded,
             "real_llm": real,  # True when a live API model is behind this
             "last_error": getattr(llm.backend, "last_error", None),
-            "provider": client.provider if real else None}
+            "provider": client.provider if real else None,
+            "cache": _prompt_cache.stats()}  # hits/misses/hit_rate live here
 
 
 # -- rate limiting -------------------------------------------------------------
@@ -432,8 +574,16 @@ def chat_completions(body: dict):
             yield "data: [DONE]\n\n"
         return StreamingResponse(_sse(), media_type="text/event-stream")
 
+    text = _prompt_text(messages)
+    key = _cache_key("chatcmpl", messages,
+                     temperature=temperature, max_tokens=max_tokens)
+    cached = _prompt_cache.get(key, text)
+    if cached is not None:
+        cached["cached"] = True  # skipped the model, just like /chat
+        return cached
+
     content = llm.backend.generate(prompt, max_tokens, temperature)
-    return {
+    resp = {
         "id": _chatcmpl_id(), "object": "chat.completion",
         "created": int(_time.time()), "model": model,
         "choices": [{
@@ -447,6 +597,8 @@ def chat_completions(body: dict):
             "total_tokens": _token_count(prompt) + _token_count(content),
         },
     }
+    _prompt_cache.put(key, text, resp)
+    return resp
 
 
 def _dump_chunk(cid, created, model, delta, finish=None):
