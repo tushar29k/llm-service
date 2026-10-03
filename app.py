@@ -11,7 +11,7 @@ try:
 except ImportError as e:
     raise SystemExit("pip install fastapi uvicorn  (then re-run)") from e
 
-from model import LocalLLM
+from model import LocalLLM, BreakerOpenError
 
 import os
 
@@ -206,7 +206,8 @@ def info():
             "real_llm": real,  # True when a live API model is behind this
             "last_error": getattr(llm.backend, "last_error", None),
             "provider": client.provider if real else None,
-            "cache": _prompt_cache.stats()}  # hits/misses/hit_rate live here
+            "cache": _prompt_cache.stats(),  # hits/misses/hit_rate live here
+            "breaker": llm.breaker_status()}  # open/closed/half-open — the ui badge shows it
 
 
 # -- rate limiting -------------------------------------------------------------
@@ -331,6 +332,16 @@ async def _require_api_key(request, call_next):
                                  status_code=401,
                                  headers={"WWW-Authenticate": "Bearer"})
     return await call_next(request)
+
+
+# breaker-open is a 503, not a 500: the backend is known-down, so this is
+# "try again later", not a bug. Retry-After carries the cooldown so
+# clients (and the demo ui) know when it's worth coming back.
+@app.exception_handler(BreakerOpenError)
+async def _breaker_open(request, exc):
+    return _JSONResponse({"detail": str(exc)}, status_code=503,
+                         headers={"Retry-After":
+                                  str(max(1, round(exc.retry_after)))})
 
 
 # -- request logging -------------------------------------------------------------
@@ -566,7 +577,7 @@ def chat_completions(body: dict):
             # first chunk carries the role, like the real api does
             yield ("data: " + _dump_chunk(cid, created, model,
                                          {"role": "assistant"}) + "\n\n")
-            for piece in llm.backend.stream(prompt, max_tokens):
+            for piece in llm.stream(prompt, max_tokens):
                 yield ("data: " + _dump_chunk(cid, created, model,
                                              {"content": piece}) + "\n\n")
             yield ("data: " + _dump_chunk(cid, created, model, {},
@@ -582,7 +593,7 @@ def chat_completions(body: dict):
         cached["cached"] = True  # skipped the model, just like /chat
         return cached
 
-    content = llm.backend.generate(prompt, max_tokens, temperature)
+    content = llm.generate(prompt, max_tokens, temperature)
     resp = {
         "id": _chatcmpl_id(), "object": "chat.completion",
         "created": int(_time.time()), "model": model,

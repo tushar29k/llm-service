@@ -25,7 +25,10 @@ cost). Set lazy_load: false in config.yaml to warm the model up at startup
 instead — slower boot, fast first request.
 """
 import json
+import os
+import random
 import sys
+import threading
 import time
 import re
 
@@ -251,6 +254,98 @@ class VLLMBackend:
             yield word + " "
 
 
+# ------------------------------------------------- retry + circuit breaker
+class BreakerOpenError(Exception):
+    # the backend is known-down, so this call failed fast instead of
+    # burning retries against it. retry_after says how long to wait.
+    def __init__(self, message, retry_after=0.0):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class _CircuitBreaker:
+    # after `failure_threshold` consecutive failures the breaker opens and
+    # calls fail fast for `cooldown` seconds; then one probe goes through
+    # (half-open) — success closes it, failure opens it again. only one
+    # probe at a time, everyone else fails fast. thread-safe: uvicorn runs
+    # the sync endpoints in a threadpool.
+    def __init__(self, failure_threshold=5, cooldown_seconds=30.0,
+                 enabled=True):
+        self.failure_threshold = max(1, int(failure_threshold))
+        self.cooldown = max(0.0, float(cooldown_seconds))
+        self.enabled = enabled
+        self._state = "closed"      # closed | open | half-open
+        self._failures = 0          # consecutive failures while closed
+        self._opened_at = 0.0
+        self._probing = False
+        self._lock = threading.Lock()
+
+    def _enter(self):
+        # call before every attempt — raises BreakerOpenError when the
+        # call must fail fast instead of touching the backend
+        with self._lock:
+            if not self.enabled or self._state == "closed":
+                return
+            if self._state == "open":
+                if time.monotonic() - self._opened_at >= self.cooldown:
+                    self._state = "half-open"  # fall through: this call probes
+                else:
+                    wait = self.cooldown - (time.monotonic() - self._opened_at)
+                    raise BreakerOpenError(
+                        "backend circuit breaker is open — the model "
+                        "backend looks down, failing fast",
+                        retry_after=max(0.0, wait))
+            if self._state == "half-open":
+                if self._probing:
+                    raise BreakerOpenError(
+                        "backend circuit breaker is open — recovery probe "
+                        "already in flight", retry_after=self.cooldown)
+                self._probing = True
+
+    def _success(self):
+        with self._lock:
+            self._failures = 0
+            self._state = "closed"
+            self._probing = False
+
+    def _failure(self):
+        with self._lock:
+            self._failures += 1
+            self._probing = False
+            if self._state == "half-open" or \
+                    self._failures >= self.failure_threshold:
+                self._state = "open"
+                self._opened_at = time.monotonic()
+
+    def status(self):
+        with self._lock:
+            return {"enabled": self.enabled,
+                    "state": self._state,
+                    "consecutive_failures": self._failures}
+
+
+def _env_on(name, default):
+    # LLM_FOO=0/false/no/off/disabled turns it off; unset keeps the default
+    v = os.environ.get(name)
+    if v is None:
+        return bool(default)
+    return v.strip().lower() not in ("0", "false", "no", "off", "disabled")
+
+
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _env_float(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
 # ---------------------------------------------------------------- LLM
 class APIBackend:
     """Real model over a free API (Gemini / OpenRouter) via llm_client.
@@ -325,6 +420,24 @@ class LocalLLM:
             self.backend = APIBackend()
         else:
             self.backend = MockBackend()
+        # retry + circuit breaker around backend calls — config.yaml sets
+        # the defaults, LLM_RETRY_* / LLM_CB_* env vars override per deploy
+        rc = self.cfg.get("retry") or {}
+        cb = self.cfg.get("circuit_breaker") or {}
+        self._retry_enabled = _env_on("LLM_RETRY_ENABLED",
+                                      rc.get("enabled", True))
+        self._max_attempts = max(1, _env_int("LLM_RETRY_MAX_ATTEMPTS",
+                                            rc.get("max_attempts", 3)))
+        self._base_delay = max(0.0, _env_float(
+            "LLM_RETRY_BASE_DELAY", rc.get("base_delay_seconds", 0.5)))
+        self._jitter = max(0.0, _env_float(
+            "LLM_RETRY_JITTER", rc.get("jitter_seconds", 0.25)))
+        self._breaker = _CircuitBreaker(
+            failure_threshold=_env_int("LLM_CB_FAILURE_THRESHOLD",
+                                       cb.get("failure_threshold", 5)),
+            cooldown_seconds=_env_float("LLM_CB_COOLDOWN",
+                                        cb.get("cooldown_seconds", 30.0)),
+            enabled=_env_on("LLM_CB_ENABLED", cb.get("enabled", True)))
         # prompts live as versioned files, not inline strings — much easier
         # to diff v1 vs v2 later when something regresses
         self.prompt_dir = self.cfg.get("prompt_dir", "prompts/v1")
@@ -356,13 +469,77 @@ class LocalLLM:
         return "\n".join(f"{m['role']}: {m['content']}" for m in messages
                          ) + "\nassistant:"
 
+    def _with_retry(self, call):
+        # one backend call with retry: exponential backoff + jitter on
+        # transient failures, breaker fail-fast when the backend is down
+        attempts = self._max_attempts if self._retry_enabled else 1
+        for attempt in range(1, attempts + 1):
+            self._breaker._enter()   # raises BreakerOpenError when open
+            try:
+                out = call()
+            except BreakerOpenError:
+                raise                # fail-fast is never retried
+            except Exception:
+                self._breaker._failure()
+                if attempt == attempts:
+                    raise
+                # backoff doubles each attempt; jitter desyncs the herd
+                # when the backend comes back up
+                time.sleep(self._base_delay * (2 ** (attempt - 1)) +
+                           random.uniform(0, self._jitter))
+            else:
+                self._breaker._success()
+                return out
+
+    def generate(self, prompt, max_new_tokens=256, temperature=0.7):
+        # the resilient way to call the backend — every endpoint goes
+        # through here, never llm.backend.generate directly
+        return self._with_retry(
+            lambda: self.backend.generate(prompt,
+                                          max_new_tokens=max_new_tokens,
+                                          temperature=temperature))
+
+    def stream(self, prompt, max_new_tokens=256):
+        # regular method (not a generator) so the breaker check below runs
+        # eagerly — a dead backend is a clean 503 before any SSE headers,
+        # not a hung stream that dies mid-flight
+        self._breaker._enter()
+        return self._stream_gen(prompt, max_new_tokens)
+
+    def _stream_gen(self, prompt, max_new_tokens):
+        attempts = self._max_attempts if self._retry_enabled else 1
+        for attempt in range(1, attempts + 1):
+            if attempt > 1:
+                self._breaker._enter()  # breaker may have opened meanwhile
+            try:
+                yielded = False
+                for chunk in self.backend.stream(prompt, max_new_tokens):
+                    yielded = True
+                    yield chunk
+            except BreakerOpenError:
+                raise
+            except Exception:
+                self._breaker._failure()
+                # only retry a stream that died before its first chunk —
+                # a half-sent reply can't be replayed cleanly
+                if yielded or attempt == attempts:
+                    raise
+                time.sleep(self._base_delay * (2 ** (attempt - 1)) +
+                           random.uniform(0, self._jitter))
+            else:
+                self._breaker._success()
+                return
+
+    def breaker_status(self):
+        # surfaced on /info so the demo badge can show it
+        return self._breaker.status()
+
     def chat(self, messages, max_new_tokens=256, temperature=0.7):
-        return self.backend.generate(self.build_prompt(messages),
-                                     max_new_tokens, temperature)
+        return self.generate(self.build_prompt(messages),
+                             max_new_tokens, temperature)
 
     def chat_stream(self, messages, max_new_tokens=256):
-        yield from self.backend.stream(self.build_prompt(messages),
-                                       max_new_tokens)
+        return self.stream(self.build_prompt(messages), max_new_tokens)
 
     # -- structured output: ask -> check what came back -> show the model
     #    its mistake and try again ----------------------------------------
@@ -388,7 +565,8 @@ class LocalLLM:
         prompt = (prompt + "\nRespond with ONLY a JSON object with these "
                   "fields: %s." % ", ".join(required))
         for _ in range(retries + 1):
-            raw = self.backend.generate(prompt)
+            raw = self.generate(prompt)  # transient backend blips get
+            # retried inside generate; this loop is only for bad JSON
             obj, err = self._extract_json(raw, required)
             if obj:
                 return obj

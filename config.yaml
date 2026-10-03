@@ -44,3 +44,21 @@ cache:            # prompt cache — exact match first, optional semantic tier.
                   # (SWAP: drop in a real embedder for production use)
     enabled: false    # off by default — opt in when you want it
     threshold: 0.97   # cosine similarity needed to count as the same prompt
+retry:            # retry transient backend failures before giving up
+  enabled: true   # LLM_RETRY_ENABLED=0 disables
+  max_attempts: 3 # total tries per backend call (1 = no retry)
+                  # LLM_RETRY_MAX_ATTEMPTS overrides
+  base_delay_seconds: 0.5   # first retry waits this long, then doubles
+                  # LLM_RETRY_BASE_DELAY overrides
+  jitter_seconds: 0.25      # random 0..jitter added per retry, so a fleet
+                  # doesn't hammer the backend in lockstep
+                  # LLM_RETRY_JITTER overrides
+circuit_breaker:  # stop calling a backend that's clearly down — fail fast
+                  # with a 503 instead of burning retries on every request
+  enabled: true   # LLM_CB_ENABLED=0 disables
+  failure_threshold: 5    # consecutive failures before the breaker opens
+                  # LLM_CB_FAILURE_THRESHOLD overrides
+  cooldown_seconds: 30.0  # an open breaker fails fast for this long, then
+                  # one probe call goes through (half-open): success
+                  # closes it, failure opens it again
+                  # LLM_CB_COOLDOWN overrides

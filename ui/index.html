@@ -131,6 +131,7 @@ fetch('/info').then(function(r){return r.json()}).then(function(i){
   else if(i.real_llm){el.innerHTML='● live LLM · <b>'+esc(i.model||'')+'</b> · api hiccup';el.classList.add('mock')}
   else{el.textContent='● offline mock';el.classList.add('mock')}
   if(i.cache&&i.cache.enabled){el.innerHTML+=' · cache <b>'+Math.round(i.cache.hit_rate*100)+'%</b>'}
+  if(i.breaker&&i.breaker.enabled&&i.breaker.state!=='closed'){el.innerHTML+=' · breaker <b>'+esc(i.breaker.state)+'</b>'}
 }).catch(function(){document.getElementById('info').textContent='● status unknown'});
 
 var chatLog=[];
