@@ -62,3 +62,8 @@ circuit_breaker:  # stop calling a backend that's clearly down — fail fast
                   # one probe call goes through (half-open): success
                   # closes it, failure opens it again
                   # LLM_CB_COOLDOWN overrides
+shutdown:         # graceful shutdown — SIGTERM/SIGINT drains instead of
+                  # dropping: new requests get a 503, in-flight ones
+                  # (streaming responses especially) finish first
+  grace_seconds: 20   # how long to wait for in-flight requests before the
+                      # process exits anyway — LLM_GRACEFUL_SECS overrides

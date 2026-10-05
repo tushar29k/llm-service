@@ -544,6 +544,96 @@ async def _request_logger(request, call_next):
     return response
 
 
+# -- graceful shutdown ---------------------------------------------------------
+# SIGTERM (Render deploys, k8s, docker stop) should drain, not drop: flip a
+# draining flag, answer new work with 503, and let in-flight requests —
+# streaming responses especially — finish before the process exits. the wait
+# is bounded by the grace period, so one stuck client can't hold a deploy
+# hostage forever.
+import anyio as _sh_anyio
+from contextlib import asynccontextmanager as _sh_lifespan
+
+_SHUT_CFG = llm.cfg.get("shutdown") or {}
+# env beats config — one knob for the platform to tune without a redeploy
+_grace_secs = float(os.environ.get("LLM_GRACEFUL_SECS",
+                                   _SHUT_CFG.get("grace_seconds", 20)))
+
+_draining = False       # flipped the moment shutdown starts
+_inflight = 0           # requests currently being served; a stream counts
+                        # until its last chunk is sent, not just until the
+                        # response object exists
+_inflight_lock = _rt_threading.Lock()  # sync endpoints run in a threadpool
+
+
+def _inflight_inc():
+    global _inflight
+    with _inflight_lock:
+        _inflight += 1
+
+
+def _inflight_dec():
+    global _inflight
+    with _inflight_lock:
+        _inflight -= 1
+
+
+@_sh_lifespan
+async def _drain_on_shutdown(app):
+    # uvicorn runs this on SIGTERM/SIGINT — it already stopped accepting new
+    # connections by now; this waits out the requests that were mid-flight
+    # when the signal landed
+    yield
+    global _draining
+    _draining = True  # stragglers on old connections get a 503, not a hang
+    deadline = _rt_time.monotonic() + max(0.0, _grace_secs)
+    while _rt_time.monotonic() < deadline:
+        with _inflight_lock:
+            left = _inflight
+        if left <= 0:
+            break
+        await _sh_anyio.sleep(0.05)
+    # grace over with requests still stuck: the process exits and they get
+    # cut — the tradeoff is bounded and documented, not silent
+
+
+app.router.lifespan_context = _drain_on_shutdown
+
+# the demo page and /info are observability, not model spend — they stay up
+# while draining so probes don't flap mid-deploy
+_DRAIN_OK = ("/", "/info", "/docs", "/openapi.json", "/redoc")
+
+
+# registered last so it runs first: a 503 during drain shouldn't cost the
+# caller rate-limit tokens or a log line
+@app.middleware("http")
+async def _graceful_drain(request, call_next):
+    if _draining and request.url.path not in _DRAIN_OK:
+        return _JSONResponse(
+            {"detail": "server is shutting down — retry shortly"},
+            status_code=503, headers={"Retry-After": "5"})
+    _inflight_inc()
+    try:
+        response = await call_next(request)
+    except Exception:
+        _inflight_dec()
+        raise
+    body_iter = getattr(response, "body_iterator", None)
+    if body_iter is None:
+        _inflight_dec()  # plain body already rendered — nothing left to wait on
+        return response
+
+    async def _tracked():
+        # hold the slot until the last chunk is actually sent — a stream
+        # that only built its response object isn't done yet
+        try:
+            async for chunk in body_iter:
+                yield chunk
+        finally:
+            _inflight_dec()
+    response.body_iterator = _tracked()
+    return response
+
+
 # -- openai-compatible chat completions --------------------------------------
 # speaks the openai request/response contract: messages in, chat.completion
 # out (or an sse stream of chat.completion.chunk), so existing openai client

@@ -249,6 +249,15 @@ backend defaults to rough gemini-flash rates, overridable via
 never the key itself) and a `stream` flag. Streams log once fully sent, so
 their latency covers the whole stream.
 
+## Graceful shutdown
+
+SIGTERM/SIGINT drains instead of dropping: the server stops taking new work
+(new requests get `503` + `Retry-After`, except `/` and `/info` which stay up
+for the demo page and probes) and waits for in-flight requests — streaming
+responses especially — to finish before the process exits. The wait is bounded
+by `shutdown.grace_seconds` in config.yaml (default 20s; `LLM_GRACEFUL_SECS`
+overrides) so one stuck client can't hold a deploy hostage forever.
+
 ## Honest notes
 
 - The mock backend is dumb on purpose — templated answers, no intelligence. It's a stand-in so the API, streaming, retries, and benchmarks are all real and testable without a GPU or API bill.
