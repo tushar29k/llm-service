@@ -210,6 +210,39 @@ def info():
             "breaker": llm.breaker_status()}  # open/closed/half-open — the ui badge shows it
 
 
+# -- health/readiness probes --------------------------------------------------
+# /health = liveness: the process is alive and answering. always 200 — a
+# dead process can't answer anyway; orchestrators use this to decide
+# whether to restart the container.
+# /ready = readiness: the model is actually loaded and can serve. 503 while
+# the backend is still warming up (lazy hf/vllm backends report loaded
+# false until the first _ensure_loaded finishes), so routers hold traffic
+# until real requests would succeed. probes are observability, not model
+# spend — never auth'd, never rate-limited, same treatment as / and /info.
+# liveness stays up through a graceful drain (so the container isn't killed
+# mid-shutdown); readiness flips to 503 there, so no new traffic arrives.
+from fastapi.responses import JSONResponse as _ProbeJSON
+
+
+@app.get("/health", include_in_schema=False)
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/ready", include_in_schema=False)
+def ready():
+    # still warming up — tell the router to hold traffic a little longer
+    loaded = getattr(llm.backend, "loaded", True)
+    if callable(loaded):  # some backends expose loaded() as a method
+        loaded = loaded()
+    if loaded:
+        return {"status": "ready"}
+    return _ProbeJSON(
+        {"status": "loading",
+         "detail": "model is still loading — retry shortly"},
+        status_code=503, headers={"Retry-After": "5"})
+
+
 # -- rate limiting -------------------------------------------------------------
 # token bucket per api key: a cheap guardrail so one client can't hammer
 # the model. keyed off the X-API-Key header, falling back to a shared
@@ -273,8 +306,10 @@ limiter = _RateLimiter(_rate_cfg.get("rate_per_sec", 10.0),
                        _rate_cfg.get("burst", 30),
                        _rate_cfg.get("enabled", True))
 
-# the demo page and /info are observability, not model spend — never throttled
-_NO_LIMIT = ("/", "/info", "/docs", "/openapi.json", "/redoc")
+# the demo page, /info, and the probes are observability, not model spend —
+# never throttled
+_NO_LIMIT = ("/", "/info", "/health", "/ready", "/docs", "/openapi.json",
+             "/redoc")
 
 
 @app.middleware("http")
@@ -311,7 +346,8 @@ _KEYS = _configured_keys()
 
 def _key_from(request):
     # X-API-Key header, same as the rate limiter — or the classic
-    # Authorization: Bearer scheme for openai-style clients
+    # Authorization: Bearer scheme for openai-style clients. the probes
+    # (/health, /ready) are observability, not model calls — never keyed
     key = request.headers.get("x-api-key")
     if key:
         return key
@@ -598,9 +634,11 @@ async def _drain_on_shutdown(app):
 
 app.router.lifespan_context = _drain_on_shutdown
 
-# the demo page and /info are observability, not model spend — they stay up
-# while draining so probes don't flap mid-deploy
-_DRAIN_OK = ("/", "/info", "/docs", "/openapi.json", "/redoc")
+# the demo page, /info, and /health are observability, not model spend —
+# they stay up while draining so probes don't flap mid-deploy. /ready is
+# deliberately absent: readiness must flip to 503 during a drain so no new
+# traffic arrives
+_DRAIN_OK = ("/", "/info", "/health", "/docs", "/openapi.json", "/redoc")
 
 
 # registered last so it runs first: a 503 during drain shouldn't cost the

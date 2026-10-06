@@ -252,11 +252,16 @@ their latency covers the whole stream.
 ## Graceful shutdown
 
 SIGTERM/SIGINT drains instead of dropping: the server stops taking new work
-(new requests get `503` + `Retry-After`, except `/` and `/info` which stay up
-for the demo page and probes) and waits for in-flight requests — streaming
+(new requests get `503` + `Retry-After`, except `/`, `/info`, and `/health` which
+stay up for the demo page and probes) and waits for in-flight requests — streaming
 responses especially — to finish before the process exits. The wait is bounded
 by `shutdown.grace_seconds` in config.yaml (default 20s; `LLM_GRACEFUL_SECS`
-overrides) so one stuck client can't hold a deploy hostage forever.
+overrides) so one stuck client can't hold a deploy hostage forever. For
+orchestrators: `GET /health` is liveness (always 200 while the process runs),
+`GET /ready` is readiness (200 once the model is loaded, 503 while a lazy
+backend is still warming up or during a drain, with `Retry-After`). Both are
+observability — never auth'd or rate-limited. `python3 test_health.py` proves
+the whole contract.
 
 ## Honest notes
 
