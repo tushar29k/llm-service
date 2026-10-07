@@ -1,0 +1,5 @@
+Respond with ONLY a JSON object. Nothing else.
+- Include exactly these fields: {fields}.
+- No extra fields, no markdown fences, no explanation text.
+- Every value must be a plain string.
+- If a value is unknown, use an empty string "".

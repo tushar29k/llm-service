@@ -1,0 +1,6 @@
+winner: A
+date: 2026-10-07
+backend: mock
+score: A 1.000 vs B 1.000
+rationale: tie on the mock backend — incumbent kept
+production: unchanged (A suffix already inline in model.py)
