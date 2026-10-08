@@ -58,6 +58,13 @@ If anything's broken, an assertion tells you which part.
 python3 evals/run_extract_eval.py
 ```
 
+**Prompt regression tests** — golden prompt outputs pinned against the mock backend: the exact prompt text the production code sends (inline suffixes, rendered templates, chat formatting) plus the output. Edit a prompt and the goldens fail with a diff; re-bless deliberately with `--record`:
+
+```bash
+python3 evals/run_prompt_regression.py
+python3 evals/run_prompt_regression.py --record   # bless an intended change
+```
+
 **Benchmark** — latency, time-to-first-token, and throughput:
 
 ```bash
