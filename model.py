@@ -34,6 +34,24 @@ import re
 
 import yaml
 
+try:
+    import jsonschema
+except ImportError:
+    # extract_json raises loudly if you ask for schema validation without
+    # this — never silently return unvalidated JSON
+    jsonschema = None
+
+
+def _violation_text(errors):
+    # keep the retry prompt short — the model only needs the highlights
+    bits = []
+    for e in errors[:3]:
+        where = ".".join(str(p) for p in e.absolute_path) or "root"
+        bits.append(f"{where}: {e.message}")
+    if len(errors) > 3:
+        bits.append(f"+{len(errors) - 3} more")
+    return "; ".join(bits)
+
 
 # ---------------------------------------------------------------- backends
 class MockBackend:
@@ -544,7 +562,7 @@ class LocalLLM:
     # -- structured output: ask -> check what came back -> show the model
     #    its mistake and try again ----------------------------------------
     @staticmethod
-    def _extract_json(text, required):
+    def _extract_json(text, schema):
         # cheap trick: grab the outermost { ... } instead of trusting the
         # model to output *only* JSON (it rarely does on the first try)
         start, end = text.find("{"), text.rfind("}")
@@ -554,20 +572,41 @@ class LocalLLM:
             obj = json.loads(text[start:end + 1])
         except json.JSONDecodeError as e:
             return None, f"invalid JSON: {e}"
-        missing = [f for f in required if f not in obj]
-        if missing:
-            return None, f"missing fields: {missing}"
+        if jsonschema is None:
+            raise RuntimeError("jsonschema is not installed — "
+                               "pip install jsonschema to validate "
+                               "structured output")
+        try:
+            validator = jsonschema.Draft202012Validator(schema)
+        except jsonschema.SchemaError as e:
+            # your schema is broken — a retry won't fix that, say so now
+            raise ValueError("bad JSON schema passed to extract_json: "
+                             f"{e.message}") from None
+        errors = sorted(validator.iter_errors(obj),
+                        key=lambda e: (list(e.absolute_path), e.message))
+        if errors:
+            return None, "schema violations: " + _violation_text(errors)
         return obj, None
 
-    def extract_json(self, prompt, required, retries=2):
+    def extract_json(self, prompt, required, retries=2, schema=None):
         # naming the fields up front helps real models too — vague
         # "give me JSON" prompts come back with the wrong shape
-        prompt = (prompt + "\nRespond with ONLY a JSON object with these "
-                  "fields: %s." % ", ".join(required))
+        if schema is not None:
+            # full JSON-schema validation, not just required fields —
+            # violations feed back into the retry loop like anything else
+            prompt += ("\nRespond with ONLY a JSON object conforming to "
+                       "this JSON Schema: %s" % json.dumps(schema))
+            validate_against = schema
+        else:
+            # no schema: keep the old suffix byte-for-byte — the prompt
+            # regression goldens pin this text exactly
+            prompt += ("\nRespond with ONLY a JSON object with these "
+                       "fields: %s." % ", ".join(required))
+            validate_against = {"type": "object", "required": list(required)}
         for _ in range(retries + 1):
             raw = self.generate(prompt)  # transient backend blips get
             # retried inside generate; this loop is only for bad JSON
-            obj, err = self._extract_json(raw, required)
+            obj, err = self._extract_json(raw, validate_against)
             if obj:
                 return obj
             prompt += f"\nYour last output had an error: {err}. Fix it."

@@ -19,7 +19,7 @@ So this repo flips it: the entire service runs against a mock backend that's ins
 
 - `chat(messages)` — plain completion.
 - `chat_stream(messages)` — yields tokens one at a time (this is what powers the SSE endpoint).
-- `extract_json(prompt, required)` — asks the model for JSON, validates the required fields, and if something's wrong it feeds the error back into the prompt and tries again (up to `retries` times) before raising.
+- `extract_json(prompt, required, retries=2, schema=None)` — asks the model for JSON, validates it, and if something's wrong it feeds the error back into the prompt and tries again (up to `retries` times) before raising. Without a schema it just checks the required fields are present; pass a full JSON Schema in `schema` and it validates everything — types, nested fields, `additionalProperties` — so a wrong-typed field triggers a retry just like a missing one.
 
 There are two backends behind that interface. `MockBackend` is the fake — templated answers, instant, zero dependencies. `HFBackend` is a real Hugging Face model via `transformers`, with proper streaming through `TextIteratorStreamer` on a background thread.
 
@@ -143,6 +143,11 @@ curl -N -X POST localhost:8000/chat/stream \
 curl -X POST localhost:8000/extract \
   -H 'Content-Type: application/json' \
   -d '{"prompt": "Extract the order.", "required": ["order_id", "items"]}'
+
+# same, but validated against a full JSON Schema — wrong types also retry
+curl -X POST localhost:8000/extract \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt": "Extract the order.", "schema": {"type": "object", "required": ["order_id", "total"], "properties": {"order_id": {"type": "string"}, "total": {"type": "number"}}}}'
 
 # what's running
 curl localhost:8000/info

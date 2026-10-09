@@ -81,7 +81,8 @@ def load_extract_cases():
 def check_extract(case, raw, fields, is_mock):
     # deterministic gates a real model must also pass
     checks = {}
-    obj, err = LocalLLM._extract_json(raw, fields)
+    obj, err = LocalLLM._extract_json(
+        raw, {"type": "object", "required": fields})
     checks["valid_json"] = err is None
     checks["required_present"] = (obj is not None
                                   and all(f in obj for f in fields))

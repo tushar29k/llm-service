@@ -2,7 +2,7 @@
 
   POST /chat         {messages, max_tokens?} -> {response}
   POST /chat/stream {messages}              -> SSE token stream
-  POST /extract     {prompt, required[]}    -> JSON, validated (retries for you)
+  POST /extract     {prompt, required[]?, schema?} -> JSON, schema-validated (retries for you)
   GET  /info                                -> which backend is actually loaded
 """
 try:
@@ -54,7 +54,10 @@ def chat_stream(body: dict):
 
 @app.post("/extract")
 def extract(body: dict):
-    return llm.extract_json(body["prompt"], body["required"])
+    # schema is optional — without it you get the old required-fields
+    # check, which is all the demo UI sends today
+    return llm.extract_json(body["prompt"], body.get("required") or [],
+                            schema=body.get("schema"))
 
 
 # -- prompt cache ---------------------------------------------------------------

@@ -32,6 +32,39 @@ def main():
     except ValueError:
         pass
 
+    # a schema-violating output must trigger a retry, not get returned:
+    # first call returns total as a string (schema wants a number),
+    # second call is fixed — expect exactly 2 backend calls and the
+    # corrected object
+    calls = {"n": 0}
+
+    def flaky(prompt, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return '{"order_id": "ORD-1", "total": "twelve-fifty"}'
+        return '{"order_id": "ORD-1", "total": 12.50}'
+
+    llm.backend.generate = flaky
+    schema = {"type": "object", "required": ["order_id", "total"],
+              "properties": {"order_id": {"type": "string"},
+                             "total": {"type": "number"}}}
+    obj = llm.extract_json("Extract the order.", ["order_id", "total"],
+                           retries=2, schema=schema)
+    assert obj == {"order_id": "ORD-1", "total": 12.50}, \
+        f"schema retry returned garbage: {obj}"
+    assert calls["n"] == 2, \
+        f"expected the violation to trigger one retry, got {calls['n']} calls"
+
+    # and a violation that never fixes itself still gives up loudly
+    llm.backend.generate = lambda prompt, **kw: \
+        '{"order_id": "ORD-1", "total": "twelve-fifty"}'
+    try:
+        llm.extract_json("Extract the order.", ["order_id", "total"],
+                         retries=1, schema=schema)
+        raise AssertionError("should have raised")
+    except ValueError:
+        pass
+
     # prompt files should load and fill in their {placeholders}
     p = llm.load_prompt("summarise", max_words=50, document="hello world")
     assert "50" in p and "hello world" in p, "prompt template broken"
