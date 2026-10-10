@@ -559,6 +559,43 @@ class LocalLLM:
     def chat_stream(self, messages, max_new_tokens=256):
         return self.stream(self.build_prompt(messages), max_new_tokens)
 
+    def prepare_history(self, messages, strategy=None):
+        # one place the chat endpoints go through before the model sees a
+        # conversation: cut the history down to the context budget. the
+        # strategy comes from the call, then LLM_HISTORY_STRATEGY, then
+        # config.yaml's history.strategy — default sliding_window, the one
+        # that needs no model at all
+        from history import truncate
+        hcfg = self.cfg.get("history") or {}
+        strat = (strategy or os.environ.get("LLM_HISTORY_STRATEGY")
+                 or hcfg.get("strategy", "sliding_window"))
+        budget = _env_int("LLM_HISTORY_MAX_TOKENS",
+                          hcfg.get("max_tokens", 4096))
+        keep_recent = _env_int("LLM_HISTORY_KEEP_RECENT",
+                               hcfg.get("keep_recent", 10))
+        return truncate(messages, strategy=strat, max_tokens=budget,
+                        keep_recent=keep_recent,
+                        summariser=self._summarise_older)
+
+    def _summarise_older(self, older):
+        # summarise strategy's workhorse: ask the backend for a short
+        # summary of the dropped turns. mock-safe — whatever the backend
+        # answers becomes the summary; if the call fails, excerpt the
+        # turns instead of erroring the whole chat
+        try:
+            doc = "\n".join(f"{m.get('role', '')}: {m.get('content', '')}"
+                            for m in older)
+            prompt = self.load_prompt("summarise", max_words=150,
+                                      document=doc)
+            return self.generate(prompt, max_new_tokens=220,
+                                 temperature=0.3).strip()
+        except Exception:
+            excerpt = "\n".join(
+                f"{m.get('role', '')}: {m.get('content', '')}"
+                for m in older[:4])
+            return ("[summary unavailable — first turns of the dropped "
+                    f"history]\n{excerpt}")
+
     # -- structured output: ask -> check what came back -> show the model
     #    its mistake and try again ----------------------------------------
     @staticmethod

@@ -77,6 +77,23 @@ def main():
     assert hasattr(llm_v.backend, "stream")
     assert not llm_v.backend.loaded  # nothing loaded until first generate
 
+    # history truncation: a long conversation gets cut to the budget on
+    # both strategies — sliding window drops the oldest turns, summarise
+    # keeps the recent ones verbatim behind one summary message
+    llm = LocalLLM()  # fresh instance — earlier tests patched generate
+    long = ([{"role": "system", "content": "be brief"}] +
+            [{"role": "user" if i % 2 == 0 else "assistant",
+              "content": "word " * 120 + str(i)} for i in range(30)])
+    out, stats = llm.prepare_history(long)  # default = sliding_window
+    assert stats["in_budget"] and stats["dropped"] > 0, stats
+    assert out[-1]["content"].endswith("29"), "newest turn must survive"
+    assert out[0]["role"] == "system", "system prompt must survive"
+    out, stats = llm.prepare_history(long, strategy="summarise")
+    assert stats["in_budget"], stats
+    assert any("[earlier conversation summary]" in m.get("content", "")
+               for m in out), "summarise must collapse old turns"
+    assert out[-1]["content"].endswith("29"), "newest turn must survive"
+
     print("llm-service smoke OK")
 
 

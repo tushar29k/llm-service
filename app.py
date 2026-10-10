@@ -32,7 +32,10 @@ app = FastAPI(title="llm-service")
 
 @app.post("/chat")
 def chat(body: dict):
-    messages = body["messages"]
+    # long conversations get cut to the context budget first — the
+    # strategy is per-request ("history_strategy") or the server default
+    messages, hist = llm.prepare_history(body["messages"],
+                                        strategy=body.get("history_strategy"))
     max_tokens = body.get("max_tokens", 256)
     text = _prompt_text(messages)
     key = _cache_key("chat", messages, max_tokens=max_tokens)
@@ -40,15 +43,18 @@ def chat(body: dict):
     if cached is not None:
         cached["cached"] = True  # caller can tell this skipped the model
         return cached
-    resp = {"response": llm.chat(messages, max_new_tokens=max_tokens)}
+    resp = {"response": llm.chat(messages, max_new_tokens=max_tokens),
+            "history": hist}
     _prompt_cache.put(key, text, resp)
     return resp
 
 
 @app.post("/chat/stream")
 def chat_stream(body: dict):
+    messages, _ = llm.prepare_history(body["messages"],
+                                     strategy=body.get("history_strategy"))
     return StreamingResponse(
-        (f"data: {t}\n\n" for t in llm.chat_stream(body["messages"])),
+        (f"data: {t}\n\n" for t in llm.chat_stream(messages)),
         media_type="text/event-stream")
 
 
@@ -696,7 +702,8 @@ def _token_count(text):
 
 @app.post("/v1/chat/completions")
 def chat_completions(body: dict):
-    messages = body["messages"]
+    messages, hist = llm.prepare_history(body["messages"],
+                                        strategy=body.get("history_strategy"))
     model = body.get("model", llm.cfg.get("model_id"))
     temperature = body.get("temperature", 0.7)
     max_tokens = body.get("max_tokens", 256)
@@ -738,6 +745,7 @@ def chat_completions(body: dict):
             "completion_tokens": _token_count(content),
             "total_tokens": _token_count(prompt) + _token_count(content),
         },
+        "history": hist,
     }
     _prompt_cache.put(key, text, resp)
     return resp

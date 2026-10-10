@@ -184,6 +184,28 @@ for chunk in client.chat.completions.create(
 Token counts in `usage` are whitespace-word estimates — close enough for the
 mock backend; swap in a real tokenizer when you move off it.
 
+### Multi-turn history truncation
+
+Long conversations get cut down to a context budget *before* they reach the
+model, on every chat endpoint (`/chat`, `/chat/stream`,
+`/v1/chat/completions`). Two strategies, in `history.py`:
+
+- `sliding_window` (default) — drop the oldest turns first. System messages
+  always survive; the newest turn is never cut.
+- `summarise` — keep the last `keep_recent` turns (default 10) verbatim and
+  collapse everything older into one `[earlier conversation summary]` message
+  written by the backend. Mock-safe: if the model call fails, a labelled
+  verbatim excerpt stands in — truncation never 500s your chat.
+
+The budget is `history.max_tokens` in `config.yaml` (default 4096,
+char-estimated at ~4 chars/token since offline boxes have no tokenizer).
+Set the strategy per request with a `history_strategy` body field, or
+globally with `LLM_HISTORY_STRATEGY` / `LLM_HISTORY_MAX_TOKENS`. The
+response carries a `history` object — strategy used, tokens and message
+counts before/after, whether it landed in budget. A 50-turn conversation
+stays in budget on both strategies; run `python3 test_history.py` to watch
+it happen.
+
 ## Real LLM mode
 
 The demo ships in mock mode, but one env var turns on a real model — no
@@ -237,6 +259,11 @@ model.py          LocalLLM: chat / chat_stream / extract_json (retry loop)
                   / VLLMBackend (vLLM) / APIBackend (free API, see above)
 app.py            FastAPI: /chat, /chat/stream (SSE), /extract, /info,
                   /v1/chat/completions (OpenAI-compatible)
+history.py        multi-turn truncation: sliding_window (drop oldest turns)
+                  vs summarise (collapse old turns into one summary) —
+                  char-based token budget, wired into every chat endpoint
+test_history.py   50-turn fixture: both strategies stay in the 4096-token
+                  budget, newest turn + system prompt always survive
 prompts/v1/       versioned prompt templates — files, not inline strings
 bench.py          latency + throughput, straight against the backend (no HTTP)
 config.yaml       backend: mock | hf | vllm | api, quantization: none | 8bit — the knobs

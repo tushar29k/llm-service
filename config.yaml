@@ -71,3 +71,19 @@ shutdown:         # graceful shutdown — SIGTERM/SIGINT drains instead of
                   # (streaming responses especially) finish first
   grace_seconds: 20   # how long to wait for in-flight requests before the
                       # process exits anyway — LLM_GRACEFUL_SECS overrides
+history:          # multi-turn truncation — long conversations get cut down
+                  # to the context budget before they reach the model, so a
+                  # 50-turn chat never blows the window. strategies:
+                  # sliding_window drops the oldest turns (cheap, no model
+                  # needed); summarise keeps the last keep_recent turns and
+                  # collapses the older ones into one summary via the
+                  # backend (mock-safe: the mock's templated answer stands
+                  # in, and a failed call falls back to a plain excerpt)
+  strategy: sliding_window   # sliding_window | summarise —
+                            # LLM_HISTORY_STRATEGY overrides; /chat and
+                            # /v1/chat/completions accept a per-request
+                            # "history_strategy" body field
+  max_tokens: 4096          # budget for history tokens, char-estimated
+                            # (~4 chars/token) — LLM_HISTORY_MAX_TOKENS
+  keep_recent: 10           # summarise keeps this many recent turns verbatim
+                            # — LLM_HISTORY_KEEP_RECENT
