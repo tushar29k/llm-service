@@ -478,6 +478,20 @@ class LocalLLM:
         text = open(f"{self.prompt_dir}/{name}.txt").read()
         return text.format(**kwargs)
 
+    # curated chat personas — the library the caller can pick from
+    SYSTEM_PROMPTS = ("concise", "teacher", "strict")
+
+    def load_system_prompt(self, name):
+        # prompts/library/ sits next to the versioned prompt dirs, not in
+        # them — these are personas, not versioned templates. file content
+        # is the whole system prompt, no placeholders. prepend it as a
+        # system message; build_prompt puts it first for every backend
+        if name not in self.SYSTEM_PROMPTS:
+            raise ValueError(f"unknown system prompt {name!r} — want one of "
+                             f"{list(self.SYSTEM_PROMPTS)}")
+        base = os.path.dirname(self.prompt_dir) or "."
+        return open(f"{base}/library/{name}.txt").read()
+
     def build_prompt(self, messages):
         # HF and vLLM expose the tokenizer's real chat template; the mock
         # gets the cheap stand-in

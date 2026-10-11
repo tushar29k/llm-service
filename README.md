@@ -265,6 +265,9 @@ history.py        multi-turn truncation: sliding_window (drop oldest turns)
 test_history.py   50-turn fixture: both strategies stay in the 4096-token
                   budget, newest turn + system prompt always survive
 prompts/v1/       versioned prompt templates — files, not inline strings
+prompts/library/  curated system prompts (concise | teacher | strict) —
+                  personas for chat, loaded with load_system_prompt(name)
+docs/system-prompts.md  behavioural comparison of the library personas
 bench.py          latency + throughput, straight against the backend (no HTTP)
 config.yaml       backend: mock | hf | vllm | api, quantization: none | 8bit — the knobs
                   to swap backends or halve weight memory
