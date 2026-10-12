@@ -38,6 +38,23 @@ logging:          # per-request jsonl log — latency, tokens, cost estimate
                   # cost_usd, backend, key_hash (sha, never the key), stream
   cost_prompt_per_1m: 0.50      # $ per 1M tokens for the api backend
   cost_completion_per_1m: 1.50  # local backends (mock/hf/vllm) always cost 0
+router:           # cost router — easy tasks ride the small tier, hard ones
+                  # the large. classification is cheap heuristics, no model:
+                  # explicit "route" body field (small|large) first, then the
+                  # LLM_ROUTE env (small|large|off), then extract-with-schema,
+                  # then long prompts, then reasoning keywords
+                  # (explain/why/debug/code/…). every decision is logged as
+                  # one json line in logs/router.jsonl (LLM_ROUTER_LOG
+                  # overrides), and /chat answers carry a `route` object
+  enabled: true   # LLM_ROUTE=off bypasses per request instead
+  small_backend: null  # backend name for the easy tier (mock|hf|vllm|api);
+                      # null = the service default — LLM_ROUTER_SMALL overrides
+  large_backend: null  # backend name for the hard tier; null = default —
+                      # LLM_ROUTER_LARGE overrides. set e.g. "api" to send
+                      # hard tasks to the real model while easy ones stay on
+                      # the cheap default
+  long_prompt_tokens: 1500  # prompts estimated above this (~4 chars/token)
+                      # route large — LLM_ROUTER_LONG_TOKENS overrides
 cache:            # prompt cache — exact match first, optional semantic tier.
                   # repeated prompts return the stored response without
                   # touching the backend; stats land in /info.cache

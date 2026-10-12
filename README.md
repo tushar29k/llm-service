@@ -276,6 +276,10 @@ test_llm_client.py  client tests: no-key -> mock path, request shapes (mocked
                   HTTP, never a real API), retry on 429, key never in errors
 test_request_logging.py  fires 100 requests at the app and asserts the jsonl
                   request log parses with latency/tokens/cost on every line
+router.py         cost router: cheap heuristics classify each request small|large
+                  (explicit route hint → LLM_ROUTE env → extract-with-schema →
+                  long prompt → reasoning keywords), every decision logged to
+                  logs/router.jsonl, /chat answers carry a `route` object
 ```
 
 ## Request logging
@@ -290,6 +294,30 @@ backend defaults to rough gemini-flash rates, overridable via
 `logging.cost_*` keys in config.yaml), plus a `key_hash` (sha of the API key,
 never the key itself) and a `stream` flag. Streams log once fully sent, so
 their latency covers the whole stream.
+
+## Cost router
+
+Not every request needs the biggest model. `router.py` classifies each
+request as `small` or `large` with cheap heuristics — no model involved, so
+the router itself is nearly free: an explicit `"route": "small"|"large"` body
+field first, then the `LLM_ROUTE` env (`small|large|off`), then
+extract-with-schema, then prompts estimated above
+`router.long_prompt_tokens` (default 1500), then reasoning keywords
+(`explain`, `why`, `debug`, `code`, …). Everything else rides small.
+
+Every decision is logged as one JSON line in `logs/router.jsonl` (override
+with `LLM_ROUTER_LOG`): path, task, tier, reason, which backend actually
+served it, and the prompt size behind the call. `/chat` answers carry the
+same decision back as a `route` object (`tier`, `reason`, `backend`); the
+stream endpoints keep their SSE contract untouched and log only.
+
+Tier → backend mapping lives in config.yaml `router:` (`small_backend` /
+`large_backend`, or `LLM_ROUTER_SMALL` / `LLM_ROUTER_LARGE`). Both default to
+the service's own backend, so classification and logging work out of the box
+and the traffic split only starts when you point a tier at a different
+backend — e.g. `large_backend: api` sends hard tasks to the real model while
+easy ones stay on the cheap default. A tier that fails to build warns at
+startup and falls back to the default instead of refusing to serve.
 
 ## Graceful shutdown
 

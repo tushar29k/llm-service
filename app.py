@@ -30,6 +30,59 @@ llm = LocalLLM(backend=_backend_choice())   # load once at startup — model ini
 app = FastAPI(title="llm-service")
 
 
+# -- cost router ---------------------------------------------------------------
+# easy tasks ride the small tier, hard ones the large tier. each tier is a
+# backend name (mock | hf | vllm | api); unset means "the service default",
+# so classification + per-request logging work everywhere and the traffic
+# split only kicks in when you point a tier somewhere else
+# (e.g. LLM_ROUTER_LARGE=api sends hard tasks to the real model while easy
+# ones stay on the cheap default). a tier that fails to build warns at
+# startup and falls back to the default — never refuses to serve.
+import router as _router
+
+_route_cfg = llm.cfg.get("router") or {}
+_default_backend_name = _backend_choice() or llm.cfg.get("backend", "mock")
+
+
+def _tier_instance(tier):
+    name = (os.environ.get("LLM_ROUTER_" + tier.upper()) or
+            _route_cfg.get(tier + "_backend") or "").strip().lower()
+    if not name or name == _default_backend_name:
+        return None  # tier rides the default backend — nothing to build
+    try:
+        return LocalLLM(backend=name)
+    except Exception as e:
+        # a misconfigured tier must not take the service down — warn
+        # loudly, serve the tier from the default backend instead
+        print(f"warning: router {tier} backend {name!r} unavailable ({e}) — "
+              f"{tier} tier rides the default backend")
+        return None
+
+
+_llm_small = _tier_instance("small")
+_llm_large = _tier_instance("large")
+
+
+def _route_request(task, text, explicit, path, schema=False):
+    # one place every model endpoint goes through: classify the request,
+    # pick the tier's backend instance, log the decision as one json line.
+    # returns (decision dict, LocalLLM to serve it)
+    if _route_cfg.get("enabled", True):
+        d = _router.classify(text, task=task, schema=schema,
+                             explicit=explicit, cfg=_route_cfg)
+    else:
+        d = {"tier": "small", "reason": "router disabled in config.yaml"}
+    svc = {"small": _llm_small, "large": _llm_large}.get(d["tier"]) or llm
+    _router.log_decision({
+        "path": path, "task": task, "tier": d["tier"],
+        "reason": d["reason"],
+        "backend": type(svc.backend).__name__,  # what actually served it
+        "distinct": svc is not llm,  # false until a tier gets its own backend
+        "prompt_tokens_est": _router.estimate_tokens(text),
+    })
+    return d, svc
+
+
 @app.post("/chat")
 def chat(body: dict):
     # long conversations get cut to the context budget first — the
@@ -38,13 +91,21 @@ def chat(body: dict):
                                         strategy=body.get("history_strategy"))
     max_tokens = body.get("max_tokens", 256)
     text = _prompt_text(messages)
-    key = _cache_key("chat", messages, max_tokens=max_tokens)
+    # the router decides the tier before the cache check — a cache hit
+    # still logs what would have served it, so the log stays per-request
+    decision, svc = _route_request("chat", text, body.get("route"), "/chat")
+    route_info = {"tier": decision["tier"], "reason": decision["reason"],
+                  "backend": type(svc.backend).__name__}
+    key = _cache_key("chat", messages,
+                     backend_name=type(svc.backend).__name__,
+                     max_tokens=max_tokens)
     cached = _prompt_cache.get(key, text)
     if cached is not None:
         cached["cached"] = True  # caller can tell this skipped the model
+        cached["route"] = route_info
         return cached
-    resp = {"response": llm.chat(messages, max_new_tokens=max_tokens),
-            "history": hist}
+    resp = {"response": svc.chat(messages, max_new_tokens=max_tokens),
+            "history": hist, "route": route_info}
     _prompt_cache.put(key, text, resp)
     return resp
 
@@ -53,16 +114,24 @@ def chat(body: dict):
 def chat_stream(body: dict):
     messages, _ = llm.prepare_history(body["messages"],
                                      strategy=body.get("history_strategy"))
+    # routing is logged per request; the sse payload itself is untouched —
+    # a route prefix in the stream would break naive event parsers
+    _, svc = _route_request("chat", _prompt_text(messages),
+                            body.get("route"), "/chat/stream")
     return StreamingResponse(
-        (f"data: {t}\n\n" for t in llm.chat_stream(messages)),
+        (f"data: {t}\n\n" for t in svc.chat_stream(messages)),
         media_type="text/event-stream")
 
 
 @app.post("/extract")
 def extract(body: dict):
     # schema is optional — without it you get the old required-fields
-    # check, which is all the demo UI sends today
-    return llm.extract_json(body["prompt"], body.get("required") or [],
+    # check, which is all the demo UI sends today. a schema'd extract is
+    # precision work, so it routes large by default
+    _, svc = _route_request("extract", body["prompt"], body.get("route"),
+                            "/extract",
+                            schema=body.get("schema") is not None)
+    return svc.extract_json(body["prompt"], body.get("required") or [],
                             schema=body.get("schema"))
 
 
@@ -106,10 +175,11 @@ def _prompt_text(messages):
                      for m in messages if isinstance(m, dict))
 
 
-def _cache_key(endpoint, messages, **params):
+def _cache_key(endpoint, messages, backend_name=None, **params):
     # backend + model are in the key so a config swap never serves
-    # another setup's answers
-    payload = [endpoint, type(llm.backend).__name__,
+    # another setup's answers — the router passes the tier's backend so
+    # small and large answers never share a cache entry
+    payload = [endpoint, backend_name or type(llm.backend).__name__,
                llm.cfg.get("model_id"), messages, params]
     return _cache_hash.sha256(
         _cache_json.dumps(payload, sort_keys=True, default=str).encode()
@@ -708,6 +778,9 @@ def chat_completions(body: dict):
     temperature = body.get("temperature", 0.7)
     max_tokens = body.get("max_tokens", 256)
     prompt = llm.build_prompt(messages)
+    # same router as /chat — logged per request, openai contract untouched
+    _, svc = _route_request("chat", _prompt_text(messages),
+                            body.get("route"), "/v1/chat/completions")
 
     if body.get("stream"):
         def _sse():
@@ -715,7 +788,7 @@ def chat_completions(body: dict):
             # first chunk carries the role, like the real api does
             yield ("data: " + _dump_chunk(cid, created, model,
                                          {"role": "assistant"}) + "\n\n")
-            for piece in llm.stream(prompt, max_tokens):
+            for piece in svc.stream(prompt, max_tokens):
                 yield ("data: " + _dump_chunk(cid, created, model,
                                              {"content": piece}) + "\n\n")
             yield ("data: " + _dump_chunk(cid, created, model, {},
@@ -725,13 +798,14 @@ def chat_completions(body: dict):
 
     text = _prompt_text(messages)
     key = _cache_key("chatcmpl", messages,
+                     backend_name=type(svc.backend).__name__,
                      temperature=temperature, max_tokens=max_tokens)
     cached = _prompt_cache.get(key, text)
     if cached is not None:
         cached["cached"] = True  # skipped the model, just like /chat
         return cached
 
-    content = llm.generate(prompt, max_tokens, temperature)
+    content = svc.generate(prompt, max_tokens, temperature)
     resp = {
         "id": _chatcmpl_id(), "object": "chat.completion",
         "created": int(_time.time()), "model": model,
