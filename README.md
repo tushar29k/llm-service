@@ -269,6 +269,11 @@ prompts/library/  curated system prompts (concise | teacher | strict) —
                   personas for chat, loaded with load_system_prompt(name)
 docs/system-prompts.md  behavioural comparison of the library personas
 bench.py          latency + throughput, straight against the backend (no HTTP)
+load_test.py      asyncio concurrent clients against /chat over real HTTP —
+                  spins up the service on the mock backend and prints a
+                  p50/p99 table per concurrency level (--mode per-client
+                  measures the backend, shared documents the rate limiter;
+                  --base-url hits a live service instead)
 config.yaml       backend: mock | hf | vllm | api, quantization: none | 8bit — the knobs
                   to swap backends or halve weight memory
 test_smoke.py     sanity checks for chat, streaming, extraction, retries, prompts
