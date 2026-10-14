@@ -131,6 +131,9 @@ def main():
                     help="comma-separated backends to bench head-to-head, "
                          "e.g. --backends vllm,hf (default: config.yaml)")
     ap.add_argument("--max-new-tokens", type=int, default=60)
+    ap.add_argument("--json", action="store_true",
+                    help="print the rows as one JSON array instead of the "
+                         "human table (for the CI bench gate)")
     args = ap.parse_args()
 
     probe = LocalLLM()
@@ -155,6 +158,16 @@ def main():
 
     if len(rows) > 1:
         print_table(rows)
+
+    if args.json:
+        # machine-readable for the CI bench gate — keep it to the perf
+        # contract (throughput + extract health), not the prose
+        import json as _json
+        slim = [{k: r[k] for k in
+                 ("quant", "backend", "chat_total_ms", "stream_total_ms",
+                  "chat_tps", "stream_tps", "ttft_ms", "extract_ok")}
+                for r in rows]
+        print(_json.dumps(slim))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,1 @@
+[{"quant": "-", "backend": "MockBackend", "chat_total_ms": 0.026790000447363127, "stream_total_ms": 81.78409399988595, "chat_tps": 597237.7653160823, "stream_tps": 195.63706360826484, "ttft_ms": 5.106759999762289, "extract_ok": true}]

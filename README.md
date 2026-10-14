@@ -73,6 +73,8 @@ python3 bench.py
 
 You'll get three lines: `chat:` with total time and tok/s, `stream:` with first-token time and tok/s, and `extract_json:` with the parsed object. (On the mock these numbers are meaningless for model quality — they just tell you the plumbing works and how fast your machine runs the scaffolding.)
 
+CI runs `test_smoke.py` plus a bench regression gate on every push to `main` (`.github/workflows/smoke-bench.yml`): `bench_check.py` re-runs `bench.py --json` and fails the build if mock-backend throughput drops more than 30% below the committed `bench/baseline.json` or structured extraction breaks. Re-run `bench.py` and refresh the baseline whenever the hot path legitimately changes speed.
+
 **Quantization — FP16 vs INT8** (`quantization: 8bit` in `config.yaml`):
 
 The 8-bit path loads the weights as int8 via bitsandbytes (`BitsAndBytesConfig(load_in_8bit=True)`), which works on CPU — dequantization happens on the fly at each matmul. If the 8-bit load fails for any reason, the backend warns and falls back to unquantized weights. Run the head-to-head with:
@@ -269,6 +271,10 @@ prompts/library/  curated system prompts (concise | teacher | strict) —
                   personas for chat, loaded with load_system_prompt(name)
 docs/system-prompts.md  behavioural comparison of the library personas
 bench.py          latency + throughput, straight against the backend (no HTTP)
+bench_check.py    CI bench gate: fails when mock-backend throughput drops
+                  >30% below the committed baseline
+bench/baseline.json   the throughput baseline the bench gate compares against
+.github/workflows/smoke-bench.yml   CI: smoke test + bench gate on every push
 load_test.py      asyncio concurrent clients against /chat over real HTTP —
                   spins up the service on the mock backend and prints a
                   p50/p99 table per concurrency level (--mode per-client
