@@ -85,6 +85,8 @@ def _route_request(task, text, explicit, path, schema=False):
 
 @app.post("/chat")
 def chat(body: dict):
+    """Chat with the model. Body: {"messages": [{role, content}, ...],
+    max_tokens?, history_strategy?, route?}. Returns {response, history, route}."""
     # long conversations get cut to the context budget first — the
     # strategy is per-request ("history_strategy") or the server default
     messages, hist = llm.prepare_history(body["messages"],
@@ -112,6 +114,8 @@ def chat(body: dict):
 
 @app.post("/chat/stream")
 def chat_stream(body: dict):
+    """SSE stream of chat tokens. Same body as /chat; yields "data: <token>"
+    frames as the model writes."""
     messages, _ = llm.prepare_history(body["messages"],
                                      strategy=body.get("history_strategy"))
     # routing is logged per request; the sse payload itself is untouched —
@@ -125,6 +129,9 @@ def chat_stream(body: dict):
 
 @app.post("/extract")
 def extract(body: dict):
+    """Extract structured JSON. Body: {"prompt": str, "required": [fields],
+    "schema"?: json-schema}. Missing fields and schema violations are
+    retried; schema'd extracts route to the large tier by default."""
     # schema is optional — without it you get the old required-fields
     # check, which is all the demo UI sends today. a schema'd extract is
     # precision work, so it routes large by default
@@ -270,6 +277,8 @@ _prompt_cache = _PromptCache()
 
 @app.get("/info")
 def info():
+    """Service info: backend, model, cache stats (hit_rate), router tiers,
+    rate-limit and auth state."""
     backend = type(llm.backend).__name__
     params, loaded = None, True
     if backend == "HFBackend":
@@ -772,6 +781,9 @@ def _token_count(text):
 
 @app.post("/v1/chat/completions")
 def chat_completions(body: dict):
+    """OpenAI-compatible chat completions — the `openai` client library works
+    unchanged (point base_url here). stream=true gives SSE
+    chat.completion.chunk frames ending in "data: [DONE]"."""
     messages, hist = llm.prepare_history(body["messages"],
                                         strategy=body.get("history_strategy"))
     model = body.get("model", llm.cfg.get("model_id"))
