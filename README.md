@@ -2,6 +2,44 @@
 
 An OpenAI-style chat/completions microservice you can develop against with zero API keys.
 
+## Release notes — v2.0
+
+A production-plumbed LLM microservice: OpenAI-compatible API, SSE streaming, structured JSON extraction with validate-and-retry, versioned prompts, a cost router, and multi-turn history management — all benchmarked, load-tested, and CI-gated. Measured numbers below are from this repo (CPU-only box for HF runs, mock backend for plumbing):
+
+**Benchmarks** (`python3 bench.py --backends mock,hf` — TTFT / total / tok-s, 60-token calls):
+
+| backend | weights | chat total | chat tok/s | stream TTFT | stream total | stream tok/s |
+|---------|---------|------------|------------|-------------|--------------|--------------|
+| mock | n/a | ~0 ms | 1,683,502 | 5 ms | 82 ms | 196 |
+| FP16 (hf) | 1976 MB | 26,739 ms | 2.0 | 543 ms | 5,797 ms | 5.5 |
+| INT8 (hf) | 630 MB | — | 3.0 | 362 ms | — | 4.7 |
+| vLLM | — | — | — | — | — | — |
+
+- INT8 loads via bitsandbytes with a graceful FP16 fallback; the greedy quality spot-check was byte-identical to FP16, and extract validation passes on both. The win is memory (3× smaller), not CPU speed.
+- vLLM has no row yet — it needs a CUDA GPU; `bench.py --backends vllm,hf` produces it on a GPU box.
+
+**Load test** (`load_test.py`, mock backend over real HTTP, 40 distinct prompts so the cache can't inflate throughput):
+
+- 1 → 50 concurrent clients: p50 3.8 → 202.4 ms, p99 6.2 → 310.3 ms, **0 real errors**.
+- Shared mode documents the guardrail: token-bucket rate limiting (429 + `Retry-After`) starts shedding load past ~10 req/s with a burst of 30.
+
+**Quality gates**:
+
+- Structured-extraction spot-check set (`evals/extract_cases.jsonl`): **10/10** on the mock; schema violations trigger a retry exactly like missing fields (`test_smoke.py` proves the one-retry contract).
+- Prompt regression goldens (`evals/prompt_goldens.json`): 5 cases pin exact prompt text — editing a prompt fails the run with a unified diff; re-bless deliberately with `--record`.
+- Prompt A/B (`evals/prompt_ab.py`, 2026-10-07): incumbent A vs challenger B scored 1.000 / 1.000 on the mock — tie goes to the incumbent, production unchanged.
+- CI (`.github/workflows/smoke-bench.yml`): smoke test + bench gate on every push; fails the build if mock-backend throughput drops >30% vs `bench/baseline.json` or extraction breaks.
+
+**Production plumbing**: token-bucket rate limiting per API key (429s past the limit, `test_rate_limit.py`), optional API-key auth (401 + `WWW-Authenticate: Bearer` when keys are set, open when not, `test_auth.py`), per-request JSONL logging (latency, tokens, cost estimate — 100 requests parse, `test_request_logging.py`), exact prompt cache with hit-rate in `/info` (live demo measured 0.83), retry-with-backoff + circuit breaker on backend failures, graceful SIGTERM drain (503 + `Retry-After` for new work, 20s grace, `test_graceful_shutdown.py`), and `/health` (liveness) + `/ready` (model loaded, `test_health.py`).
+
+**Cost router** (`router.py`): cheap heuristics classify each request small|large (explicit hint → `LLM_ROUTE` env → extract-with-schema → long prompt >1500 tokens → reasoning keywords), every decision logged to `logs/router.jsonl`, and `/chat` answers carry the decision back as a `route` object — 7 cases proven end-to-end in `test_router.py`.
+
+**Multi-turn** (`history.py`): every chat endpoint truncates to the `history.max_tokens` budget (default 4096, char-estimated) — `sliding_window` drops oldest turns, `summarise` keeps the last 10 verbatim and collapses the rest into one summary. A 50-turn, 5159-token conversation lands at 4005 / 1100 tokens; system messages and the newest turn always survive (`test_history.py`).
+
+**System prompt library**: 3 curated personas in `prompts/library/` (concise | teacher | strict), 472–523 chars each, with a behavioural comparison in `docs/system-prompts.md`.
+
+Full detail: ADRs in `docs/adr/`, the production checklist items tracked in the roadmap, copy-paste clients in `docs/examples.md`.
+
 ## Live demo
 
 **[https://tushar29k-llm-service.onrender.com](https://tushar29k-llm-service.onrender.com)** — Streaming chat and structured JSON extraction against the mock backend — the same API shape the real model backends use.
